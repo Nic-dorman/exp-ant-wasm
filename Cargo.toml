@@ -1,0 +1,3 @@
+[workspace]
+members = ["ant-protocol", "ant-wasm"]
+resolver = "2"

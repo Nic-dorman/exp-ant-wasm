@@ -1,0 +1,50 @@
+[package]
+name = "ant-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Browser WASM client for downloading data from the Autonomi network via WebRTC"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ant-protocol = { path = "../ant-protocol" }
+blake3 = "1"
+bytes = "1"
+hex = "0.4"
+js-sys = "0.3"
+lru = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "Event",
+    "ErrorEvent",
+    "Headers",
+    "MessageEvent",
+    "Request",
+    "RequestInit",
+    "Response",
+    "RtcConfiguration",
+    "RtcDataChannel",
+    "RtcDataChannelEvent",
+    "RtcDataChannelInit",
+    "RtcDataChannelState",
+    "RtcIceCandidate",
+    "RtcIceCandidateInit",
+    "RtcIceConnectionState",
+    "RtcPeerConnection",
+    "RtcSdpType",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+    "Window",
+]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
