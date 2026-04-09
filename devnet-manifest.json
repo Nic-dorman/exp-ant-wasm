@@ -1,0 +1,15 @@
+{
+  "base_port": 30821,
+  "node_count": 5,
+  "bootstrap": [
+    "/ip4/127.0.0.1/udp/30821/quic",
+    "/ip4/127.0.0.1/udp/30822/quic"
+  ],
+  "data_dir": "C:\\Users\\nbdor\\AppData\\Roaming\\ant\\data",
+  "created_at": "2026-04-09T10:19:09.200109900+00:00",
+  "webtransport": {
+    "url": "https://127.0.0.1:15000",
+    "cert_hash": "f904e6d4318d376093e4b10f0044569676180341e8c8e1e952aed5585256343b",
+    "peer_id": "cd382e09efce80bb6e0f54ad3efeabd86d2580ca4eed9e17b67f78056e5355cd"
+  }
+}

@@ -1,0 +1,67 @@
+# Production Configuration for ant-node
+#
+# This file matches the NodeConfig struct schema.
+# See src/config.rs for all available fields and defaults.
+
+# Root directory for node data
+root_dir = "/var/lib/ant"
+
+# Listening port (10000-10999 for production)
+port = 10000
+
+# Bootstrap peer addresses (socket addrs)
+bootstrap = []
+
+# Network mode: "production", "testnet", or "development"
+network_mode = "production"
+
+# Log level: "trace", "debug", "info", "warn", "error"
+log_level = "info"
+
+# Maximum application-layer message size in bytes (default: 5 MiB)
+# max_message_size = 5242880
+
+# --- Payment verification ---
+# Production nodes require payment by default.
+[payment]
+# DO NOT set enabled = false in production
+enabled = true
+
+# Cache capacity for verified content addresses
+cache_capacity = 100000
+
+# REQUIRED: Set to your Arbitrum wallet address before running in production.
+# rewards_address = "0xYourAddressHere"
+
+# EVM network: "arbitrum-one" or "arbitrum-sepolia"
+evm_network = "arbitrum-one"
+
+# Prometheus metrics port (0 to disable)
+metrics_port = 9100
+
+# --- Storage ---
+[storage]
+enabled = true
+
+# Maximum number of chunks to store (0 = unlimited)
+max_chunks = 0
+
+# Verify content hash on read
+verify_on_read = true
+
+# Maximum LMDB database size in GiB (0 = default 32 GiB)
+db_size_gb = 0
+
+# --- Upgrade ---
+[upgrade]
+enabled = false
+channel = "stable"
+check_interval_hours = 1
+github_repo = "WithAutonomi/ant-node"
+staged_rollout_hours = 1
+
+# --- Bootstrap cache ---
+[bootstrap_cache]
+enabled = true
+max_contacts = 10000
+stale_threshold_days = 7

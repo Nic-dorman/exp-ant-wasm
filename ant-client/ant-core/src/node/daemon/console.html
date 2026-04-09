@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Node Console</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4ed;
+    --text-dim: #8b8fa3;
+    --green: #4ade80;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --blue: #60a5fa;
+    --orange: #fb923c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+  }
+  .connection-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .connection-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+  }
+  .connection-dot.connected { background: var(--green); }
+  .main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .stat-label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 28px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .stat-value.running { color: var(--green); }
+  .stat-value.stopped { color: var(--text-dim); }
+  .stat-value.errored { color: var(--red); }
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .section-header h2 { font-size: 16px; font-weight: 600; }
+  .nodes-table {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 12px 16px;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:last-child td { border-bottom: none; }
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .status-badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+  .status-badge.running { background: rgba(74,222,128,0.1); color: var(--green); }
+  .status-badge.running .dot { background: var(--green); }
+  .status-badge.stopped { background: rgba(139,143,163,0.1); color: var(--text-dim); }
+  .status-badge.stopped .dot { background: var(--text-dim); }
+  .status-badge.starting { background: rgba(96,165,250,0.1); color: var(--blue); }
+  .status-badge.starting .dot { background: var(--blue); }
+  .status-badge.stopping { background: rgba(251,191,36,0.1); color: var(--yellow); }
+  .status-badge.stopping .dot { background: var(--yellow); }
+  .status-badge.errored { background: rgba(248,113,113,0.1); color: var(--red); }
+  .status-badge.errored .dot { background: var(--red); }
+  .events-section { margin-top: 8px; }
+  .events-log {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    max-height: 240px;
+    overflow-y: auto;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+  .event-entry { color: var(--text-dim); }
+  .event-entry .time { color: var(--text-dim); margin-right: 8px; }
+  .event-entry.node_started .label,
+  .event-entry.node_starting .label { color: var(--green); }
+  .event-entry.node_stopped .label,
+  .event-entry.node_stopping .label { color: var(--text-dim); }
+  .event-entry.node_crashed .label,
+  .event-entry.node_errored .label { color: var(--red); }
+  .event-entry.node_restarting .label { color: var(--orange); }
+  .empty-state {
+    text-align: center;
+    padding: 48px 16px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+  .uptime { font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Node Console</h1>
+  <div class="connection-status">
+    <div class="connection-dot" id="connDot"></div>
+    <span id="connLabel">Connecting...</span>
+  </div>
+</header>
+<div class="main">
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Total Nodes</div>
+      <div class="stat-value" id="statTotal">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Running</div>
+      <div class="stat-value running" id="statRunning">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Stopped</div>
+      <div class="stat-value stopped" id="statStopped">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Errored</div>
+      <div class="stat-value errored" id="statErrored">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Daemon Uptime</div>
+      <div class="stat-value uptime" id="statUptime">-</div>
+    </div>
+  </div>
+
+  <div class="section-header">
+    <h2>Nodes</h2>
+  </div>
+
+  <div class="nodes-table" id="nodesContainer">
+    <div class="empty-state">No nodes registered</div>
+  </div>
+
+  <div class="events-section">
+    <div class="section-header">
+      <h2>Events</h2>
+    </div>
+    <div class="events-log" id="eventsLog">
+      <div class="event-entry"><span class="time">--:--:--</span> Waiting for events...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = window.location.origin + '/api/v1';
+let eventsStarted = false;
+
+function formatUptime(secs) {
+  if (secs == null) return '-';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+function timeNow() {
+  return new Date().toLocaleTimeString('en-GB', { hour12: false });
+}
+
+function setConnected(ok) {
+  const dot = document.getElementById('connDot');
+  const label = document.getElementById('connLabel');
+  dot.className = 'connection-dot' + (ok ? ' connected' : '');
+  label.textContent = ok ? 'Connected' : 'Disconnected';
+}
+
+async function fetchStatus() {
+  try {
+    const res = await fetch(API + '/status');
+    const data = await res.json();
+    document.getElementById('statTotal').textContent = data.nodes_total;
+    document.getElementById('statRunning').textContent = data.nodes_running;
+    document.getElementById('statStopped').textContent = data.nodes_stopped;
+    document.getElementById('statErrored').textContent = data.nodes_errored;
+    document.getElementById('statUptime').textContent = formatUptime(data.uptime_secs);
+    setConnected(true);
+  } catch {
+    setConnected(false);
+  }
+}
+
+async function fetchNodes() {
+  try {
+    const res = await fetch(API + '/nodes/status');
+    const data = await res.json();
+    renderNodes(data.nodes);
+  } catch { /* ignore, status fetch handles connection state */ }
+}
+
+function renderNodes(nodes) {
+  const container = document.getElementById('nodesContainer');
+  if (!nodes || nodes.length === 0) {
+    container.innerHTML = '<div class="empty-state">No nodes registered</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>ID</th><th>Name</th><th>Version</th><th>Status</th></tr></thead><tbody>';
+  for (const n of nodes) {
+    const s = n.status;
+    html += '<tr>';
+    html += '<td>' + n.node_id + '</td>';
+    html += '<td>' + esc(n.name) + '</td>';
+    html += '<td>' + esc(n.version) + '</td>';
+    html += '<td><span class="status-badge ' + s + '"><span class="dot"></span>' + s + '</span></td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function refresh() {
+  fetchStatus();
+  fetchNodes();
+}
+
+function addEvent(type, data) {
+  const log = document.getElementById('eventsLog');
+  if (!eventsStarted) {
+    log.innerHTML = '';
+    eventsStarted = true;
+  }
+  const entry = document.createElement('div');
+  entry.className = 'event-entry ' + type;
+  const detail = typeof data === 'object' ? JSON.stringify(data) : String(data);
+  entry.innerHTML = '<span class="time">' + timeNow() + '</span><span class="label">[' + type + ']</span> ' + esc(detail);
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+  // Keep max 200 entries
+  while (log.children.length > 200) log.removeChild(log.firstChild);
+}
+
+function connectSSE() {
+  const es = new EventSource(API + '/events');
+  const eventTypes = [
+    'node_starting', 'node_started', 'node_stopping', 'node_stopped',
+    'node_crashed', 'node_restarting', 'node_errored',
+    'download_started', 'download_progress', 'download_complete'
+  ];
+  for (const t of eventTypes) {
+    es.addEventListener(t, function(e) {
+      let data;
+      try { data = JSON.parse(e.data); } catch { data = e.data; }
+      addEvent(t, data);
+      // Refresh node list on state-change events
+      if (t !== 'download_progress') refresh();
+    });
+  }
+  es.onerror = function() {
+    setConnected(false);
+    es.close();
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+// Initial load
+refresh();
+connectSSE();
+// Periodic refresh as fallback
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

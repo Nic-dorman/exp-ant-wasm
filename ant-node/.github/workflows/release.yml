@@ -1,0 +1,467 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v0.4.0)'
+        required: true
+      dry_run:
+        description: 'Dry run (no actual publish or release)'
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      version_number: ${{ steps.version.outputs.version_number }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          VERSION_NUMBER="${VERSION#v}"
+          echo "version_number=$VERSION_NUMBER" >> $GITHUB_OUTPUT
+
+          if [[ "$VERSION" =~ -(alpha|beta|rc) ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Version: $VERSION (number: $VERSION_NUMBER)"
+
+      - name: Validate version format
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_REGEX="^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+(\.[0-9]+)?)?$"
+          if ! [[ "$VERSION" =~ $VERSION_REGEX ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
+
+      - name: Check Cargo.toml version
+        run: |
+          CARGO_VERSION=$(grep "^version" Cargo.toml | head -1 | cut -d'"' -f2)
+          EXPECTED="${{ steps.version.outputs.version_number }}"
+          if [[ "$CARGO_VERSION" != "$EXPECTED" ]]; then
+            echo "::error::Cargo.toml version mismatch"
+            echo "::error::Expected $EXPECTED but found $CARGO_VERSION"
+            exit 1
+          fi
+
+  test:
+    name: Test Suite
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [validate, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Use ubuntu-22.04 for GLIBC 2.35 compatibility with server deployments
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            binary: ant-node
+            archive: tar.gz
+            friendly_name: linux-x64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            binary: ant-node
+            archive: tar.gz
+            cross: true
+            friendly_name: linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: ant-node
+            archive: tar.gz
+            friendly_name: macos-x64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: ant-node
+            archive: tar.gz
+            friendly_name: macos-arm64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: ant-node.exe
+            archive: zip
+            friendly_name: windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross (Linux ARM64)
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create archive (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cp config/bootstrap_peers.toml target/${{ matrix.target }}/release/
+          cd target/${{ matrix.target }}/release
+          tar -czvf ../../../ant-node-cli-${{ matrix.friendly_name }}.tar.gz ${{ matrix.binary }} bootstrap_peers.toml
+          cd ../../..
+
+      - name: Create archive (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Copy-Item "config/bootstrap_peers.toml" "target/${{ matrix.target }}/release/bootstrap_peers.toml"
+          Push-Location "target/${{ matrix.target }}/release"
+          Compress-Archive -Path "${{ matrix.binary }}", "bootstrap_peers.toml" -DestinationPath "../../../ant-node-cli-${{ matrix.friendly_name }}.zip"
+          Pop-Location
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.friendly_name }}
+          path: ant-node-cli-${{ matrix.friendly_name }}.${{ matrix.archive }}
+          retention-days: 1
+
+  sign-windows:
+    name: Sign Windows Binary
+    runs-on: windows-latest
+    needs: [build]
+    env:
+      SM_HOST: ${{ secrets.SM_HOST }}
+      SM_API_KEY: ${{ secrets.SM_API_KEY }}
+      SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+      SM_KEYPAIR_ALIAS: ${{ secrets.SM_KEYPAIR_ALIAS }}
+      SM_LOG_LEVEL: info
+      SM_LOG_FILE: ${{ github.workspace }}\smctl-signing.log
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-windows-x64
+          path: artifacts/
+
+      - name: Extract binary for signing
+        shell: bash
+        run: |
+          cd artifacts
+          7z x *.zip
+          if [ ! -f "ant-node.exe" ]; then
+            echo "::error::ant-node.exe not found after extraction"
+            ls -R
+            exit 1
+          fi
+
+      - name: Create client certificate file
+        id: prepare_cert
+        shell: pwsh
+        run: |
+          $raw = @'
+          ${{ secrets.SM_CLIENT_CERT_B64 }}
+          '@
+
+          $clean = ($raw -replace '\s','')
+
+          if ([string]::IsNullOrWhiteSpace($clean)) {
+            Write-Error "SM_CLIENT_CERT_B64 is empty after normalization."
+            exit 1
+          }
+
+          try {
+            $certBytes = [Convert]::FromBase64String($clean)
+          } catch {
+            Write-Error "SM_CLIENT_CERT_B64 is not valid Base64."
+            exit 1
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "Certificate.p12"
+          [System.IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          "SM_CLIENT_CERT_FILE=$certPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "::add-mask::$clean"
+          "sm_client_cert_b64=$clean" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Setup DigiCert SSM tools
+        uses: digicert/ssm-code-signing@v1.2.1
+        with:
+          sm_host: ${{ secrets.SM_HOST }}
+          sm_api_key: ${{ secrets.SM_API_KEY }}
+          sm_client_cert_b64: ${{ steps.prepare_cert.outputs.sm_client_cert_b64 }}
+          sm_client_cert_password: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
+      - name: Verify smctl installation
+        shell: pwsh
+        run: |
+          smctl -v
+          smctl healthcheck
+
+      - name: Sign ant-node.exe
+        shell: pwsh
+        run: |
+          $file = "artifacts\ant-node.exe"
+          $result = & smctl sign --keypair-alias "$env:SM_KEYPAIR_ALIAS" --input "$file" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Signing failed: $result"
+            exit 1
+          }
+          Write-Host "Successfully signed ant-node.exe"
+
+      - name: Verify signature
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature "artifacts\ant-node.exe"
+          Write-Host "Status: $($sig.Status)"
+          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne "Valid") {
+            Write-Error "Signature validation failed"
+            exit 1
+          }
+
+      - name: Repackage signed archive
+        shell: bash
+        run: |
+          staging="ant-node-cli-windows-x64"
+          rm -rf "$staging"
+          mkdir "$staging"
+          cp artifacts/ant-node.exe "$staging/"
+          cp config/bootstrap_peers.toml "$staging/"
+          (cd "$staging" && 7z a "../${staging}.zip" ./*)
+
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-windows-x64
+          path: ant-node-cli-windows-x64.zip
+          retention-days: 1
+
+  sign:
+    name: Sign Releases
+    needs: [build, sign-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts (excluding signed)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Download signed Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-windows-x64
+          path: artifacts-signed-win
+
+      - name: Replace Windows archive with signed version
+        run: |
+          rm -f artifacts/ant-node-cli-windows-x64.zip
+          cp artifacts-signed-win/*.zip artifacts/
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Download ant-keygen
+        run: |
+          gh release download --repo WithAutonomi/ant-keygen --pattern 'ant-keygen-linux-x64.tar.gz' --dir /tmp
+          tar -xzf /tmp/ant-keygen-linux-x64.tar.gz -C /tmp
+          chmod +x /tmp/ant-keygen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decode signing key
+        run: |
+          echo "${{ secrets.ANT_NODE_SIGNING_KEY }}" | xxd -r -p > /tmp/signing-key.secret
+          chmod 600 /tmp/signing-key.secret
+
+      - name: Sign all release files
+        run: |
+          for file in artifacts/ant-node-cli-*.tar.gz artifacts/ant-node-cli-*.zip; do
+            if [ -f "$file" ]; then
+              echo "Signing $file..."
+              /tmp/ant-keygen sign \
+                --key /tmp/signing-key.secret \
+                --input "$file" \
+                --output "${file}.sig"
+            fi
+          done
+
+      - name: Clean up signing key
+        if: always()
+        run: rm -f /tmp/signing-key.secret
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum ant-node-cli-* 2>/dev/null > SHA256SUMS.txt || true
+          cat SHA256SUMS.txt
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-releases
+          path: |
+            artifacts/*
+          retention-days: 1
+
+  publish-crate:
+    name: Publish to crates.io
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    if: github.event.inputs.dry_run != 'true' && needs.validate.outputs.is_prerelease != 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify crate
+        run: cargo publish --dry-run --allow-dirty
+
+      - name: Publish to crates.io
+        run: cargo publish --no-verify --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+
+  release:
+    name: Create GitHub Release
+    needs: [validate, sign, publish-crate]
+    if: ${{ always() && !cancelled() && needs.validate.result == 'success' && needs.sign.result == 'success' && (needs.publish-crate.result == 'success' || needs.publish-crate.result == 'skipped') && github.event.inputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download signed artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-releases
+          path: release
+
+      - name: List release files
+        run: ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Autonomi Node ${{ needs.validate.outputs.version }}
+          body: |
+            ## Autonomi Node ${{ needs.validate.outputs.version }}
+
+            ### CLI Downloads (Manual Installation)
+
+            Download, extract, and run directly from command line:
+
+            | Platform | Download |
+            |----------|----------|
+            | Linux x64 | `ant-node-cli-linux-x64.tar.gz` |
+            | Linux ARM64 | `ant-node-cli-linux-arm64.tar.gz` |
+            | macOS x64 | `ant-node-cli-macos-x64.tar.gz` |
+            | macOS ARM64 (Apple Silicon) | `ant-node-cli-macos-arm64.tar.gz` |
+            | Windows x64 | `ant-node-cli-windows-x64.zip` |
+
+            **CLI Usage:**
+            ```bash
+            # Linux/macOS — extract and run (bootstrap peers auto-discovered)
+            tar -xzf ant-node-cli-linux-x64.tar.gz
+            ./ant-node --rewards-address 0xYourAddress
+
+            # Windows (PowerShell)
+            Expand-Archive ant-node-cli-windows-x64.zip
+            .\ant-node.exe --rewards-address 0xYourAddress
+            ```
+
+            ### Verification
+
+            All downloads are signed with ML-DSA-65 (FIPS 204) post-quantum signatures.
+            Download `ant-keygen` from [WithAutonomi/ant-keygen](https://github.com/WithAutonomi/ant-keygen/releases)
+            and verify:
+
+            ```bash
+            ant-keygen verify --key release-signing-key.pub --input <file> --signature <file>.sig
+            ```
+
+            The Windows binary (`ant-node.exe`) is additionally signed with a DigiCert EV
+            code-signing certificate. Windows will verify this signature automatically on
+            download and execution.
+
+            SHA256 checksums provided in `SHA256SUMS.txt`.
+
+            ### Auto-Upgrade
+
+            Running nodes automatically detect and upgrade to this version
+            within a 24-hour staged rollout window.
+          files: |
+            release/ant-node-cli-*.tar.gz
+            release/ant-node-cli-*.zip
+            release/ant-node-cli-*.sig
+            release/SHA256SUMS.txt
+          draft: false
+          prerelease: ${{ needs.validate.outputs.is_prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

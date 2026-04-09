@@ -1,0 +1,23 @@
+{
+  "name": "@withautonomi/self-encryption-win32-x64-msvc",
+  "version": "0.1.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maidsafe/self_encryption.git",
+    "directory": "nodejs/npm/win32-x64-msvc"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "self-encryption.win32-x64-msvc.node",
+  "files": [
+    "self-encryption.win32-x64-msvc.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  }
+}

@@ -1,0 +1,188 @@
+#cloud-config
+# Autonomi Worker Node - Runs ${nodes_per_worker} nodes
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - jq
+  - htop
+  - iotop
+
+write_files:
+  - path: /etc/ant/config.env
+    permissions: '0644'
+    content: |
+      REGION=${region}
+      NODES_PER_WORKER=${nodes_per_worker}
+      METRICS_BASE_PORT=${metrics_base_port}
+      ANT_VERSION=${ant_version}
+      BOOTSTRAP_NODES=${bootstrap_nodes}
+
+  - path: /usr/local/bin/spawn-ant-nodes.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      source /etc/ant/config.env
+
+      ARCH=$(uname -m)
+      case "$${ARCH}" in
+        x86_64) PLATFORM="linux-x64" ;;
+        aarch64) PLATFORM="linux-arm64" ;;
+        *) echo "Unsupported architecture: $${ARCH}"; exit 1 ;;
+      esac
+
+      ARCHIVE_URL="https://github.com/WithAutonomi/ant-node/releases/download/v$${ANT_VERSION}/ant-node-cli-$${PLATFORM}.tar.gz"
+      SIG_URL="$${ARCHIVE_URL}.sig"
+      BINARY_PATH="/usr/local/bin/ant-node"
+
+      echo "Downloading ant-node v$${ANT_VERSION} for $${PLATFORM}..."
+      cd /tmp
+      curl -L -o ant-node.tar.gz "$${ARCHIVE_URL}"
+      curl -L -o ant-node.tar.gz.sig "$${SIG_URL}" || echo "No signature file (dev release)"
+
+      # Extract binary
+      tar -xzf ant-node.tar.gz
+      mv ant-node "$${BINARY_PATH}"
+      chmod +x "$${BINARY_PATH}"
+      rm -f ant-node.tar.gz ant-node.tar.gz.sig
+
+      echo "Installed ant-node v$${ANT_VERSION}"
+
+      # Parse bootstrap nodes
+      IFS=',' read -ra BOOTSTRAPS <<< "$${BOOTSTRAP_NODES}"
+      BOOTSTRAP_ARGS=""
+      for bs in "$${BOOTSTRAPS[@]}"; do
+        BOOTSTRAP_ARGS="$${BOOTSTRAP_ARGS} --bootstrap $${bs}"
+      done
+
+      echo "Spawning $${NODES_PER_WORKER} nodes..."
+
+      for i in $(seq 0 $(($${NODES_PER_WORKER} - 1))); do
+        NODE_DIR="/var/lib/ant/nodes/node-$${i}"
+        METRICS_PORT=$(($${METRICS_BASE_PORT} + $${i}))
+        SERVICE_NAME="ant-node-$${i}"
+
+        mkdir -p "$${NODE_DIR}"
+
+        # Create systemd service
+        cat > /etc/systemd/system/$${SERVICE_NAME}.service <<EOF
+      [Unit]
+      Description=Autonomi Node $${i} (Region: $${REGION})
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=ant
+      Group=ant
+      ExecStart=$${BINARY_PATH} --root-dir $${NODE_DIR} --port 0 --metrics-port $${METRICS_PORT} $${BOOTSTRAP_ARGS}
+      Restart=always
+      RestartSec=10
+      MemoryMax=350M
+      CPUQuota=15%
+
+      # Security hardening
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      ReadWritePaths=$${NODE_DIR}
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+        systemctl daemon-reload
+        systemctl enable "$${SERVICE_NAME}"
+        systemctl start "$${SERVICE_NAME}"
+
+        echo "Started node $${i} on metrics port $${METRICS_PORT}"
+
+        # Stagger starts to avoid overwhelming bootstrap nodes
+        sleep 0.5
+      done
+
+      echo "All $${NODES_PER_WORKER} nodes started successfully"
+
+  - path: /usr/local/bin/manage-ant-nodes.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+
+      source /etc/ant/config.env
+
+      ACTION="$${1:-status}"
+
+      case "$${ACTION}" in
+        start)
+          for i in $(seq 0 $(($${NODES_PER_WORKER} - 1))); do
+            systemctl start "ant-node-$${i}" || true
+          done
+          echo "Started all nodes"
+          ;;
+        stop)
+          for i in $(seq 0 $(($${NODES_PER_WORKER} - 1))); do
+            systemctl stop "ant-node-$${i}" || true
+          done
+          echo "Stopped all nodes"
+          ;;
+        restart)
+          for i in $(seq 0 $(($${NODES_PER_WORKER} - 1))); do
+            systemctl restart "ant-node-$${i}" || true
+            sleep 0.2
+          done
+          echo "Restarted all nodes"
+          ;;
+        status)
+          RUNNING=0
+          FAILED=0
+          for i in $(seq 0 $(($${NODES_PER_WORKER} - 1))); do
+            if systemctl is-active --quiet "ant-node-$${i}"; then
+              ((RUNNING++)) || true
+            else
+              ((FAILED++)) || true
+              echo "Node $${i}: FAILED"
+            fi
+          done
+          echo "---"
+          echo "Running: $${RUNNING}/$${NODES_PER_WORKER}"
+          echo "Failed: $${FAILED}/$${NODES_PER_WORKER}"
+          ;;
+        health)
+          for i in $(seq 0 $(($${NODES_PER_WORKER} - 1))); do
+            PORT=$(($${METRICS_BASE_PORT} + $${i}))
+            HEALTH=$(curl -s "http://localhost:$${PORT}/metrics" | grep -E "^p2p_health_status" | awk '{print $2}' || echo "0")
+            if [[ "$${HEALTH}" != "1" ]]; then
+              echo "Node $${i} (port $${PORT}): unhealthy"
+            fi
+          done
+          ;;
+        *)
+          echo "Usage: $0 {start|stop|restart|status|health}"
+          exit 1
+          ;;
+      esac
+
+runcmd:
+  # Create ant user
+  - useradd -r -s /bin/false ant || true
+
+  # Create data directories
+  - mkdir -p /var/lib/ant/nodes
+  - chown -R ant:ant /var/lib/ant
+
+  # Increase file limits
+  - echo "* soft nofile 65535" >> /etc/security/limits.conf
+  - echo "* hard nofile 65535" >> /etc/security/limits.conf
+  - echo "fs.file-max = 2097152" >> /etc/sysctl.conf
+  - sysctl -p
+
+  # Start nodes
+  - /usr/local/bin/spawn-ant-nodes.sh
+
+final_message: "Autonomi worker node ready with ${nodes_per_worker} nodes in region ${region}"

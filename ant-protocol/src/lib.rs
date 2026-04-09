@@ -5,6 +5,7 @@
 //! and compile to `wasm32-unknown-unknown`.
 
 pub mod chunk;
+pub mod pqc_tunnel;
 
 pub use chunk::{
     ChunkGetRequest, ChunkGetResponse, ChunkMessage, ChunkMessageBody, ChunkPutRequest,

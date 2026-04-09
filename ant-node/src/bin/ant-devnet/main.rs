@@ -1,0 +1,169 @@
+//! ant-devnet CLI entry point.
+
+mod cli;
+
+use ant_node::devnet::{Devnet, DevnetConfig, DevnetEvmInfo, DevnetManifest};
+use clap::Parser;
+use cli::Cli;
+use tracing::info;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+
+    let cli = Cli::parse();
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
+
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(filter)
+        .init();
+
+    info!("ant-devnet v{}", env!("CARGO_PKG_VERSION"));
+
+    let mut config =
+        cli.preset
+            .as_deref()
+            .map_or_else(DevnetConfig::default, |preset| match preset {
+                "minimal" => DevnetConfig::minimal(),
+                "small" => DevnetConfig::small(),
+                _ => DevnetConfig::default(),
+            });
+
+    if let Some(count) = cli.nodes {
+        config.node_count = count;
+    }
+    if let Some(bootstrap) = cli.bootstrap_count {
+        config.bootstrap_count = bootstrap;
+    }
+    if let Some(base_port) = cli.base_port {
+        config.base_port = base_port;
+    }
+    if let Some(dir) = cli.data_dir {
+        config.data_dir = dir;
+    }
+    config.cleanup_data_dir = !cli.no_cleanup;
+    if let Some(delay_ms) = cli.spawn_delay_ms {
+        config.spawn_delay = std::time::Duration::from_millis(delay_ms);
+    }
+    if let Some(timeout_secs) = cli.stabilization_timeout_secs {
+        config.stabilization_timeout = std::time::Duration::from_secs(timeout_secs);
+    }
+
+    // Start Anvil and deploy contracts if EVM is enabled
+    let evm_info = if cli.enable_evm {
+        info!("Starting local Anvil blockchain for EVM payment enforcement...");
+        let testnet = evmlib::testnet::Testnet::new()
+            .await
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to start Anvil testnet: {e}"))?;
+        let network = testnet.to_network();
+        let wallet_key = testnet
+            .default_wallet_private_key()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to get wallet key: {e}"))?;
+
+        let (rpc_url, token_addr, payments_addr, merkle_addr) = match &network {
+            evmlib::Network::Custom(custom) => (
+                custom.rpc_url_http.to_string(),
+                format!("{:?}", custom.payment_token_address),
+                format!("{:?}", custom.data_payments_address),
+                custom
+                    .merkle_payments_address
+                    .map(|addr| format!("{addr:?}")),
+            ),
+            _ => {
+                return Err(color_eyre::eyre::eyre!(
+                    "Anvil testnet returned non-Custom network"
+                ))
+            }
+        };
+
+        config.evm_network = Some(network);
+
+        info!("Anvil blockchain running at {rpc_url}");
+        info!("Funded wallet private key: {wallet_key}");
+
+        // Keep testnet alive by leaking it (it will be cleaned up on process exit)
+        // This is necessary because AnvilInstance stops Anvil when dropped
+        std::mem::forget(testnet);
+
+        Some(DevnetEvmInfo {
+            rpc_url,
+            wallet_private_key: wallet_key,
+            payment_token_address: token_addr,
+            data_payments_address: payments_addr,
+            merkle_payments_address: merkle_addr,
+        })
+    } else {
+        None
+    };
+
+    let mut devnet = Devnet::new(config).await?;
+    devnet.start().await?;
+
+    // Generate WebTransport identity and start listener (before writing manifest
+    // so the cert hash is included).
+    #[cfg(feature = "webtransport")]
+    let wt_info = if let Some(port) = cli.webtransport_port {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let server_id = ant_node::webtransport::generate_identity(addr)
+            .map_err(|e| color_eyre::eyre::eyre!("WebTransport identity generation failed: {e}"))?;
+        let cert_hash = server_id.cert_hash_hex.clone();
+
+        if let Some(protocol) = devnet.bootstrap_protocol() {
+            let p2p_node = devnet.bootstrap_p2p_node();
+            let node_identity = devnet.bootstrap_node_identity();
+            let shutdown = devnet.shutdown_token();
+            tokio::spawn(async move {
+                if let Err(e) =
+                    ant_node::webtransport::run(addr, server_id, protocol, p2p_node, node_identity, shutdown).await
+                {
+                    tracing::error!("WebTransport failed: {e}");
+                }
+            });
+            info!("WebTransport available at https://127.0.0.1:{port}");
+        }
+
+        let peer_id_hex = devnet
+            .bootstrap_node_identity()
+            .map(|id| id.peer_id().to_hex())
+            .unwrap_or_default();
+
+        Some(ant_node::DevnetWebTransportInfo {
+            url: format!("https://127.0.0.1:{port}"),
+            cert_hash,
+            peer_id: peer_id_hex,
+        })
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "webtransport"))]
+    let wt_info: Option<ant_node::DevnetWebTransportInfo> = None;
+
+    let manifest = DevnetManifest {
+        base_port: devnet.config().base_port,
+        node_count: devnet.config().node_count,
+        bootstrap: devnet.bootstrap_addrs(),
+        data_dir: devnet.config().data_dir.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        evm: evm_info,
+        webtransport: wt_info,
+    };
+
+    let json = serde_json::to_string_pretty(&manifest)?;
+    if let Some(ref path) = cli.manifest {
+        tokio::fs::write(&path, &json).await?;
+        info!("Wrote manifest to {}", path.display());
+    } else {
+        println!("{json}");
+    }
+
+    info!("Devnet running. Press Ctrl+C to stop.");
+    tokio::signal::ctrl_c().await?;
+
+    devnet.shutdown().await?;
+    Ok(())
+}

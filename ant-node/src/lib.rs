@@ -1,0 +1,80 @@
+//! # ant-node
+//!
+//! A pure quantum-proof network node for the Autonomi decentralized network.
+//!
+//! This crate provides a thin wrapper around `saorsa-core` that adds:
+//! - Auto-upgrade system with ML-DSA signature verification
+//! - CLI interface and configuration
+//! - Content-addressed chunk storage with EVM payment
+//!
+//! ## Architecture
+//!
+//! `ant-node` delegates all core functionality to `saorsa-core`:
+//! - Networking via `P2PNode`
+//! - DHT via `AdaptiveDHT`
+//! - Trust via `TrustEngine`
+//! - Security via `IPDiversityConfig`
+//!
+//! ## Data Types
+//!
+//! Currently supports a single data type:
+//! - **Chunk**: Immutable content-addressed data (hash(value) == key)
+//!
+//! ## Example
+//!
+//! ```rust,no_run
+//! use ant_node::{NodeBuilder, NodeConfig};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let config = NodeConfig::default();
+//!     let mut node = NodeBuilder::new(config).build().await?;
+//!     node.run().await?;
+//!     Ok(())
+//! }
+//! ```
+
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
+#![warn(clippy::all)]
+#![warn(clippy::pedantic)]
+
+pub mod ant_protocol;
+pub mod client;
+pub mod config;
+pub mod devnet;
+pub mod error;
+pub mod event;
+pub mod node;
+pub mod payment;
+pub mod storage;
+pub mod upgrade;
+#[cfg(feature = "webtransport")]
+pub mod webtransport;
+
+pub use ant_protocol::{
+    ChunkGetRequest, ChunkGetResponse, ChunkMessage, ChunkMessageBody, ChunkPutRequest,
+    ChunkPutResponse, ChunkQuoteRequest, ChunkQuoteResponse, CHUNK_PROTOCOL_ID,
+    CLOSE_GROUP_MAJORITY, CLOSE_GROUP_SIZE, MAX_CHUNK_SIZE,
+};
+pub use client::{
+    compute_address, hex_node_id_to_encoded_peer_id, peer_id_to_xor_name, xor_distance, DataChunk,
+    XorName,
+};
+pub use config::{BootstrapCacheConfig, NodeConfig, StorageConfig};
+pub use devnet::{Devnet, DevnetConfig, DevnetEvmInfo, DevnetManifest, DevnetWebTransportInfo};
+pub use error::{Error, Result};
+pub use event::{NodeEvent, NodeEventsChannel};
+pub use node::{NodeBuilder, RunningNode};
+pub use payment::{PaymentStatus, PaymentVerifier, PaymentVerifierConfig};
+pub use storage::{AntProtocol, LmdbStorage, LmdbStorageConfig};
+
+/// Re-exports from `saorsa-core` so downstream crates (e.g. `ant-client`)
+/// can depend on `ant-node` alone without a direct `saorsa-core` dependency.
+pub mod core {
+    pub use saorsa_core::identity::{NodeIdentity, PeerId};
+    pub use saorsa_core::{
+        IPDiversityConfig, MlDsa65, MultiAddr, NodeConfig as CoreNodeConfig, NodeMode, P2PEvent,
+        P2PNode,
+    };
+}

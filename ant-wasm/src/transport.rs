@@ -1,211 +1,345 @@
-//! WebRTC data channel transport.
+//! WebTransport-based transport for chunk protocol messages.
 //!
-//! Wraps the browser's `RTCPeerConnection` and `RTCDataChannel` APIs
-//! to provide a request/response interface for chunk protocol messages.
+//! Uses the browser's WebTransport API (HTTP/3 over QUIC with TLS 1.3).
+//! An application-layer PQC tunnel (ML-KEM-768 + ChaCha20-Poly1305) with
+//! ML-DSA-65 server authentication is established on the first bidirectional
+//! stream, providing full PQ-authenticated key exchange.
 
-use crate::signaling;
-use js_sys::{ArrayBuffer, Uint8Array};
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+use ant_protocol::pqc_tunnel::{
+    self, decode_server_accept, encode_client_hello, Direction, SessionCipher,
+};
+use ant_protocol::MAX_WIRE_MESSAGE_SIZE;
+use crate::log;
+use fips203::ml_kem_768;
+use fips203::traits::{Decaps, KeyGen, SerDes};
+use fips204::ml_dsa_65;
+use fips204::traits::Verifier;
+use rand_core::OsRng;
+use js_sys::Uint8Array;
+use std::cell::Cell;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{
-    MessageEvent, RtcDataChannel, RtcDataChannelInit, RtcDataChannelState, RtcPeerConnection,
-    RtcSdpType, RtcSessionDescriptionInit,
-};
+use web_sys::{ReadableStreamDefaultReader, WebTransport, WritableStreamDefaultWriter};
+use zeroize::Zeroize;
 
-/// Pending response state: a oneshot-style channel for request/response correlation.
-type PendingMap = Rc<RefCell<HashMap<u64, js_sys::Function>>>;
+/// Maximum stream sequence number before the session must be torn down.
+///
+/// ChaCha20-Poly1305 nonce reuse is catastrophic. The nonce includes a u32
+/// stream_seq, so we must never wrap. Leave headroom below u32::MAX.
+const MAX_STREAM_SEQ: u32 = u32::MAX - 1;
 
-/// WebRTC data channel transport for communicating with an Autonomi network node.
-pub struct WebRtcTransport {
-    pc: RtcPeerConnection,
-    dc: RtcDataChannel,
-    pending: PendingMap,
+pub struct WtTransport {
+    wt: WebTransport,
+    cipher: SessionCipher,
+    stream_seq: Cell<u32>,
 }
 
-impl WebRtcTransport {
-    /// Connect to a node's WebRTC signaling endpoint and establish a data channel.
-    pub async fn connect(signaling_url: &str) -> Result<Self, String> {
-        // Create peer connection (use default ICE servers for now)
-        let pc = RtcPeerConnection::new()
-            .map_err(|e| format!("failed to create RTCPeerConnection: {e:?}"))?;
-
-        // Create data channel before creating offer (required for offer to include DC)
-        let mut dc_init = RtcDataChannelInit::new();
-        dc_init.ordered(true);
-        let dc = pc.create_data_channel_with_data_channel_dict("chunks", &dc_init);
-        dc.set_binary_type(web_sys::RtcDataChannelType::Arraybuffer);
-
-        // Create and set local offer
-        let offer = JsFuture::from(pc.create_offer())
-            .await
-            .map_err(|e| format!("failed to create offer: {e:?}"))?;
-
-        let offer_sdp = js_sys::Reflect::get(&offer, &JsValue::from_str("sdp"))
-            .map_err(|e| format!("failed to get offer sdp: {e:?}"))?
-            .as_string()
-            .ok_or("offer sdp is not a string")?;
-
-        let mut local_desc = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
-        local_desc.sdp(&offer_sdp);
-        JsFuture::from(pc.set_local_description(&local_desc))
-            .await
-            .map_err(|e| format!("failed to set local description: {e:?}"))?;
-
-        // Exchange SDP with the node's signaling endpoint
-        let answer = signaling::exchange_sdp(signaling_url, &offer_sdp).await?;
-
-        // Set remote answer
-        let mut remote_desc = RtcSessionDescriptionInit::new(RtcSdpType::Answer);
-        remote_desc.sdp(&answer.sdp);
-        JsFuture::from(pc.set_remote_description(&remote_desc))
-            .await
-            .map_err(|e| format!("failed to set remote description: {e:?}"))?;
-
-        // Wait for the data channel to open
-        wait_for_dc_open(&dc).await?;
-
-        // Set up response handler
-        let pending: PendingMap = Rc::new(RefCell::new(HashMap::new()));
-        setup_message_handler(&dc, pending.clone());
-
-        Ok(Self { pc, dc, pending })
-    }
-
-    /// Send a chunk protocol message and await the response.
+impl WtTransport {
+    /// Connect to a WebTransport server and establish a PQC tunnel.
     ///
-    /// The message must be a postcard-encoded `ChunkMessage` with a `request_id`.
-    /// The response is correlated by `request_id` and returned as raw bytes.
-    pub async fn send_request(
-        &self,
-        request_id: u64,
-        message_bytes: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        if self.dc.ready_state() != RtcDataChannelState::Open {
-            return Err("data channel is not open".to_string());
-        }
+    /// If `cert_hash` is provided (SHA-256, 32 bytes), it is passed as
+    /// `serverCertificateHashes` for self-signed certificate pinning in dev.
+    ///
+    /// If `expected_peer_id` is provided (BLAKE3 hash of the server's ML-DSA-65
+    /// public key, 32 bytes), the handshake will fail if the server's identity
+    /// does not match.
+    ///
+    /// After the WebTransport session is ready, stream 0 is used for an
+    /// ML-KEM-768 handshake to derive a shared session key.
+    pub async fn connect(
+        url: &str,
+        cert_hash: Option<&[u8]>,
+        expected_peer_id: Option<&[u8; 32]>,
+    ) -> Result<Self, String> {
+        log(&format!("transport: connecting to {url}"));
 
-        // Create a promise that resolves when the response arrives
-        let (promise, resolve) = new_resolve_pair();
-
-        // Register the pending request
-        self.pending.borrow_mut().insert(request_id, resolve);
-
-        // Send the message with a 4-byte length prefix
-        let len = message_bytes.len() as u32;
-        let mut framed = Vec::with_capacity(4 + message_bytes.len());
-        framed.extend_from_slice(&len.to_be_bytes());
-        framed.extend_from_slice(message_bytes);
-
-        let array = Uint8Array::from(framed.as_slice());
-        self.dc
-            .send_with_array_buffer_view(&array)
-            .map_err(|e| format!("failed to send: {e:?}"))?;
-
-        // Await the response
-        let response_value = JsFuture::from(promise)
-            .await
-            .map_err(|e| format!("request failed: {e:?}"))?;
-
-        let response_array: Uint8Array = response_value
-            .dyn_into()
-            .map_err(|_| "response is not a Uint8Array".to_string())?;
-
-        Ok(response_array.to_vec())
-    }
-
-    /// Close the WebRTC connection.
-    pub fn close(&self) {
-        self.dc.close();
-        self.pc.close();
-    }
-}
-
-/// Wait for the data channel to reach the "open" state.
-async fn wait_for_dc_open(dc: &RtcDataChannel) -> Result<(), String> {
-    if dc.ready_state() == RtcDataChannelState::Open {
-        return Ok(());
-    }
-
-    let (promise, resolve) = new_resolve_pair();
-
-    let resolve_clone = resolve.clone();
-    let onopen = Closure::once_into_js(move || {
-        let _ = resolve_clone.call0(&JsValue::NULL);
-    });
-    dc.set_onopen(Some(onopen.unchecked_ref()));
-
-    // Also handle errors
-    let (err_promise, err_resolve) = new_resolve_pair();
-    let err_resolve_clone = err_resolve.clone();
-    let onerror = Closure::once_into_js(move |_: web_sys::Event| {
-        let _ = err_resolve_clone.call1(&JsValue::NULL, &JsValue::from_str("DC open failed"));
-    });
-    dc.set_onerror(Some(onerror.unchecked_ref()));
-
-    // Race: either opens successfully or errors
-    let result = js_sys::Promise::race(&js_sys::Array::of2(&promise, &err_promise));
-    JsFuture::from(result)
-        .await
-        .map_err(|e| format!("data channel failed to open: {e:?}"))?;
-
-    if dc.ready_state() != RtcDataChannelState::Open {
-        return Err("data channel did not reach open state".to_string());
-    }
-
-    Ok(())
-}
-
-/// Set up the onmessage handler that routes responses to pending requests.
-fn setup_message_handler(dc: &RtcDataChannel, pending: PendingMap) {
-    let onmessage = Closure::wrap(Box::new(move |event: MessageEvent| {
-        let data = event.data();
-
-        // Data channel messages arrive as ArrayBuffer
-        let buffer: ArrayBuffer = match data.dyn_into() {
-            Ok(buf) => buf,
-            Err(_) => return,
+        let wt = if let Some(hash) = cert_hash {
+            let options = web_sys::WebTransportOptions::new();
+            let hash_obj = web_sys::WebTransportHash::new();
+            hash_obj.set_algorithm("sha-256");
+            hash_obj.set_value_u8_array(&Uint8Array::from(hash));
+            options.set_server_certificate_hashes(&[hash_obj]);
+            WebTransport::new_with_options(url, &options)
+                .map_err(|e| format!("WebTransport creation failed: {e:?}"))?
+        } else {
+            WebTransport::new(url)
+                .map_err(|e| format!("WebTransport creation failed: {e:?}"))?
         };
 
-        let array = Uint8Array::new(&buffer);
-        let bytes = array.to_vec();
+        JsFuture::from(wt.ready())
+            .await
+            .map_err(|e| format!("WebTransport connection failed: {e:?}"))?;
 
-        // Strip the 4-byte length prefix
-        if bytes.len() < 4 {
-            return;
-        }
-        let payload = &bytes[4..];
+        log("transport: connected, starting PQC handshake");
 
-        // Try to extract the request_id from the postcard-encoded ChunkMessage.
-        // The request_id is a varint at the start of the message.
-        if let Ok(msg) = ant_protocol::ChunkMessage::decode(payload) {
-            let mut pending_map = pending.borrow_mut();
-            if let Some(resolve) = pending_map.remove(&msg.request_id) {
-                let response = Uint8Array::from(payload);
-                let _ = resolve.call1(&JsValue::NULL, &response);
+        // Stream 0: ML-KEM-768 handshake with ML-DSA-65 authentication
+        let cipher = Self::perform_handshake(&wt, expected_peer_id).await?;
+
+        log("transport: PQC tunnel established (ML-KEM-768 + ML-DSA-65)");
+        Ok(Self {
+            wt,
+            cipher,
+            stream_seq: Cell::new(1),
+        })
+    }
+
+    /// Perform the client side of the authenticated PQC handshake on stream 0.
+    ///
+    /// 1. Generate ML-KEM-768 keypair
+    /// 2. Send ClientHello (encapsulation key) to server
+    /// 3. Read ServerAccept (ciphertext + pubkey + signature) from server
+    /// 4. Verify ML-DSA-65 signature over (context || ek || ct)
+    /// 5. If expected_peer_id provided, verify BLAKE3(pubkey) matches
+    /// 6. Decapsulate to recover shared secret
+    /// 7. Derive session cipher
+    async fn perform_handshake(
+        wt: &WebTransport,
+        expected_peer_id: Option<&[u8; 32]>,
+    ) -> Result<SessionCipher, String> {
+        // Generate ML-KEM-768 keypair
+        let (ek, dk) = ml_kem_768::KG::try_keygen_with_rng(&mut OsRng)
+            .map_err(|_| "ML-KEM-768 keygen failed".to_string())?;
+
+        // Open bidi stream 0
+        let bidi: web_sys::WebTransportBidirectionalStream =
+            JsFuture::from(wt.create_bidirectional_stream())
+                .await
+                .map_err(|e| format!("failed to create handshake stream: {e:?}"))?
+                .dyn_into()
+                .map_err(|_| "handshake stream type error".to_string())?;
+
+        let writable: web_sys::WebTransportSendStream = bidi.writable();
+        let readable: web_sys::WebTransportReceiveStream = bidi.readable();
+
+        let writable_stream: &web_sys::WritableStream = writable.as_ref();
+        let writer: WritableStreamDefaultWriter = writable_stream
+            .get_writer()
+            .map_err(|e| format!("get_writer failed: {e:?}"))?;
+
+        // Send ClientHello: [4B len][0x01][version][ek]
+        let ek_bytes = SerDes::into_bytes(ek);
+        let hello_payload = encode_client_hello(&ek_bytes);
+
+        let mut framed = Vec::with_capacity(4 + hello_payload.len());
+        let len = (hello_payload.len() as u32).to_be_bytes();
+        framed.extend_from_slice(&len);
+        framed.extend_from_slice(&hello_payload);
+
+        JsFuture::from(writer.write_with_chunk(&Uint8Array::from(framed.as_slice())))
+            .await
+            .map_err(|e| format!("handshake write failed: {e:?}"))?;
+
+        // Close write side to signal end of ClientHello
+        JsFuture::from(writer.close())
+            .await
+            .map_err(|e| format!("handshake close writer failed: {e:?}"))?;
+
+        // Read ServerAccept response (bounded to prevent OOM)
+        let readable_stream: &web_sys::ReadableStream = readable.as_ref();
+        let reader: ReadableStreamDefaultReader = readable_stream
+            .get_reader()
+            .dyn_into()
+            .map_err(|_| "not a ReadableStreamDefaultReader".to_string())?;
+
+        // ServerAccept is ~6.4KB; cap at 16KB for safety
+        const MAX_HANDSHAKE_RESPONSE: usize = 16 * 1024;
+        let mut response_buf = Vec::new();
+        loop {
+            let result = JsFuture::from(reader.read())
+                .await
+                .map_err(|e| format!("handshake read failed: {e:?}"))?;
+
+            let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
+                .unwrap_or(JsValue::TRUE);
+
+            if done.is_truthy() {
+                break;
+            }
+
+            let value = js_sys::Reflect::get(&result, &JsValue::from_str("value"))
+                .map_err(|e| format!("handshake read value failed: {e:?}"))?;
+
+            if !value.is_undefined() {
+                let chunk = Uint8Array::new(&value);
+                response_buf.extend_from_slice(&chunk.to_vec());
+                if response_buf.len() > MAX_HANDSHAKE_RESPONSE {
+                    return Err("handshake response exceeds size limit".to_string());
+                }
             }
         }
-    }) as Box<dyn FnMut(MessageEvent)>);
 
-    dc.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-    onmessage.forget(); // prevent the closure from being dropped
-}
+        // Strip 4-byte length prefix
+        if response_buf.len() < 4 {
+            return Err(format!(
+                "handshake response too short: {} bytes",
+                response_buf.len()
+            ));
+        }
+        let accept_payload = &response_buf[4..];
 
-/// Create a JS Promise and its resolve function.
-fn new_resolve_pair() -> (js_sys::Promise, js_sys::Function) {
-    let resolve_holder: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
-    let resolve_clone = resolve_holder.clone();
+        // Decode ServerAccept (v2: ct + pubkey + signature)
+        let accept = decode_server_accept(accept_payload)
+            .map_err(|e| format!("invalid ServerAccept: {e}"))?;
 
-    let promise = js_sys::Promise::new(&mut move |resolve, _reject| {
-        *resolve_clone.borrow_mut() = Some(resolve);
-    });
+        if accept.version != pqc_tunnel::PQC_VERSION {
+            return Err(format!("unsupported PQC version: {}", accept.version));
+        }
 
-    let resolve = resolve_holder
-        .borrow_mut()
-        .take()
-        .expect("resolve function should be set");
+        // Verify ML-DSA-65 signature before decapsulating
+        let auth_message = pqc_tunnel::build_auth_message(&ek_bytes, &accept.ct);
 
-    (promise, resolve)
+        let vk = <ml_dsa_65::PublicKey as fips204::traits::SerDes>::try_from_bytes(accept.pubkey)
+            .map_err(|_| "invalid ML-DSA-65 public key".to_string())?;
+
+        let valid = vk.verify(&auth_message, &accept.signature, &[]);
+
+        if !valid {
+            return Err("ML-DSA-65 signature verification failed — server not authenticated".to_string());
+        }
+
+        log("transport: ML-DSA-65 signature verified");
+
+        // Verify PeerId if expected
+        let derived_peer_id = pqc_tunnel::derive_peer_id(&accept.pubkey);
+        if let Some(expected) = expected_peer_id {
+            if derived_peer_id != *expected {
+                return Err(format!(
+                    "PeerId mismatch: expected {}, got {}",
+                    hex::encode(expected),
+                    hex::encode(derived_peer_id)
+                ));
+            }
+            log("transport: PeerId verified");
+        }
+
+        // ML-KEM-768 decapsulation (only after authentication succeeds)
+        let ct = <ml_kem_768::CipherText as SerDes>::try_from_bytes(accept.ct)
+            .map_err(|_| "invalid ML-KEM-768 ciphertext".to_string())?;
+        let ss: fips203::SharedSecretKey =
+            Decaps::try_decaps(&dk, &ct)
+                .map_err(|_| "ML-KEM-768 decapsulation failed".to_string())?;
+
+        // Derive session cipher, then zeroize the shared secret
+        let mut ss_bytes: [u8; 32] = SerDes::into_bytes(ss);
+        let cipher = SessionCipher::from_shared_secret(&ss_bytes);
+        ss_bytes.zeroize();
+
+        Ok(cipher)
+    }
+
+    /// Send a request and receive a response over a new encrypted bidi stream.
+    ///
+    /// The plaintext ChunkMessage is encrypted with the session cipher before
+    /// transmission, and the response is decrypted before returning.
+    pub async fn send_request(&self, message_bytes: &[u8]) -> Result<Vec<u8>, String> {
+        let seq = self.stream_seq.get();
+        if seq >= MAX_STREAM_SEQ {
+            return Err("session stream limit reached — reconnect required to prevent nonce reuse".to_string());
+        }
+        self.stream_seq.set(seq + 1);
+
+        // Encrypt the plaintext message
+        let encrypted = self
+            .cipher
+            .encrypt(seq, Direction::ClientToServer, message_bytes)
+            .map_err(|e| format!("PQC encryption failed: {e}"))?;
+
+        let envelope = pqc_tunnel::encode_encrypted(seq, &encrypted);
+
+        // Open a bidirectional stream
+        let bidi: web_sys::WebTransportBidirectionalStream =
+            JsFuture::from(self.wt.create_bidirectional_stream())
+                .await
+                .map_err(|e| format!("failed to create bidi stream: {e:?}"))?
+                .dyn_into()
+                .map_err(|_| "bidi stream is not WebTransportBidirectionalStream".to_string())?;
+
+        let writable: web_sys::WebTransportSendStream = bidi.writable();
+        let readable: web_sys::WebTransportReceiveStream = bidi.readable();
+
+        // Get writer from writable side
+        let writable_stream: &web_sys::WritableStream = writable.as_ref();
+        let writer: WritableStreamDefaultWriter = writable_stream
+            .get_writer()
+            .map_err(|e| format!("get_writer failed: {e:?}"))?;
+
+        // Write: 4-byte big-endian length prefix + encrypted envelope
+        let len = (envelope.len() as u32).to_be_bytes();
+        let mut framed = Vec::with_capacity(4 + envelope.len());
+        framed.extend_from_slice(&len);
+        framed.extend_from_slice(&envelope);
+
+        JsFuture::from(writer.write_with_chunk(&Uint8Array::from(framed.as_slice())))
+            .await
+            .map_err(|e| format!("write failed: {e:?}"))?;
+
+        // Close write side to signal end of request
+        JsFuture::from(writer.close())
+            .await
+            .map_err(|e| format!("close writer failed: {e:?}"))?;
+
+        // Read encrypted response from readable side (bounded)
+        let readable_stream: &web_sys::ReadableStream = readable.as_ref();
+        let reader: ReadableStreamDefaultReader = readable_stream
+            .get_reader()
+            .dyn_into()
+            .map_err(|_| "not a ReadableStreamDefaultReader".to_string())?;
+
+        // Cap response at MAX_WIRE_MESSAGE_SIZE + overhead for envelope framing + auth tag
+        let max_response = MAX_WIRE_MESSAGE_SIZE + 512;
+        let mut response_buf = Vec::new();
+        loop {
+            let result = JsFuture::from(reader.read())
+                .await
+                .map_err(|e| format!("read failed: {e:?}"))?;
+
+            let done = js_sys::Reflect::get(&result, &JsValue::from_str("done"))
+                .unwrap_or(JsValue::TRUE);
+
+            if done.is_truthy() {
+                break;
+            }
+
+            let value = js_sys::Reflect::get(&result, &JsValue::from_str("value"))
+                .map_err(|e| format!("read value failed: {e:?}"))?;
+
+            if !value.is_undefined() {
+                let chunk = Uint8Array::new(&value);
+                response_buf.extend_from_slice(&chunk.to_vec());
+                if response_buf.len() > max_response {
+                    return Err(format!(
+                        "response exceeds size limit: {} > {max_response}",
+                        response_buf.len()
+                    ));
+                }
+            }
+        }
+
+        // Strip 4-byte length prefix
+        if response_buf.len() < 4 {
+            return Err(format!("response too short: {} bytes", response_buf.len()));
+        }
+        let envelope_payload = &response_buf[4..];
+
+        // Decode and decrypt response envelope
+        let (resp_seq, ciphertext) = pqc_tunnel::decode_encrypted(envelope_payload)
+            .map_err(|e| format!("invalid response envelope: {e}"))?;
+
+        if resp_seq != seq {
+            return Err(format!(
+                "response sequence mismatch: expected {seq}, got {resp_seq}"
+            ));
+        }
+
+        let plaintext = self
+            .cipher
+            .decrypt(seq, Direction::ServerToClient, ciphertext)
+            .map_err(|e| format!("PQC decryption failed: {e}"))?;
+
+        Ok(plaintext)
+    }
+
+    pub fn close(&self) {
+        self.wt.close();
+    }
 }

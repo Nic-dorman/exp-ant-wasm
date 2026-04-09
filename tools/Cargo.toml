@@ -1,0 +1,23 @@
+[package]
+name = "exp-tools"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "inject-chunk"
+path = "src/inject_chunk.rs"
+
+[[bin]]
+name = "wt-test"
+path = "src/wt_test.rs"
+
+[dependencies]
+ant-node = { path = "../ant-node", features = ["webtransport"] }
+ant-protocol = { path = "../ant-protocol" }
+blake3 = "1"
+fips203 = { version = "0.4", default-features = false, features = ["ml-kem-768"] }
+fips204 = { version = "0.4", default-features = false, features = ["ml-dsa-65"] }
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+wtransport = "0.7"

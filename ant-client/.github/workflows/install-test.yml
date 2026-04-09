@@ -1,0 +1,97 @@
+name: test install mechanisms
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to test (e.g. 0.1.1 or 0.1.1-rc.1)"
+        required: true
+        type: string
+
+jobs:
+  test-install-script-linux:
+    name: test install.sh (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: run install script
+        env:
+          ANT_VERSION: ${{ inputs.version }}
+          INSTALL_DIR: ${{ runner.temp }}/bin
+        run: bash install.sh
+
+      - name: verify binary
+        run: |
+          export PATH="${{ runner.temp }}/bin:$PATH"
+          ant --help
+          echo "Binary runs successfully"
+
+      - name: verify bootstrap config
+        run: |
+          config_file="${XDG_CONFIG_HOME:-$HOME/.config}/ant/bootstrap_peers.toml"
+          if [ ! -f "$config_file" ]; then
+            echo "ERROR: bootstrap_peers.toml not found at $config_file"
+            exit 1
+          fi
+          echo "Bootstrap config installed at $config_file"
+          cat "$config_file"
+
+  test-install-script-macos:
+    name: test install.sh (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: run install script
+        env:
+          ANT_VERSION: ${{ inputs.version }}
+          INSTALL_DIR: ${{ runner.temp }}/bin
+        run: bash install.sh
+
+      - name: verify binary
+        run: |
+          export PATH="${{ runner.temp }}/bin:$PATH"
+          ant --help
+          echo "Binary runs successfully"
+
+      - name: verify bootstrap config
+        run: |
+          config_file="$HOME/Library/Application Support/ant/bootstrap_peers.toml"
+          if [ ! -f "$config_file" ]; then
+            echo "ERROR: bootstrap_peers.toml not found at $config_file"
+            exit 1
+          fi
+          echo "Bootstrap config installed at $config_file"
+          cat "$config_file"
+
+  test-install-script-windows:
+    name: test install.ps1 (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: run install script
+        shell: pwsh
+        env:
+          ANT_VERSION: ${{ inputs.version }}
+          INSTALL_DIR: ${{ runner.temp }}\ant\bin
+        run: . .\install.ps1
+
+      - name: verify binary
+        shell: pwsh
+        run: |
+          $env:Path = "${{ runner.temp }}\ant\bin;$env:Path"
+          ant --help
+          Write-Host "Binary runs successfully"
+
+      - name: verify bootstrap config
+        shell: pwsh
+        run: |
+          $configFile = Join-Path $env:APPDATA "ant\bootstrap_peers.toml"
+          if (-not (Test-Path $configFile)) {
+            Write-Error "bootstrap_peers.toml not found at $configFile"
+            exit 1
+          }
+          Write-Host "Bootstrap config installed at $configFile"
+          Get-Content $configFile

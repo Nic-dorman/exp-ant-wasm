@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomi WASM Lite - Download</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            padding: 2rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 { color: #4fc3f7; margin-bottom: 0.5rem; }
+        .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+        label { display: block; margin-bottom: 0.3rem; color: #aaa; font-size: 0.85rem; }
+        input, button {
+            font-family: inherit;
+            font-size: 0.95rem;
+            padding: 0.6rem 1rem;
+            border-radius: 4px;
+            border: 1px solid #333;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            width: 100%;
+        }
+        input:focus { outline: none; border-color: #4fc3f7; }
+        button {
+            background: #1565c0;
+            border-color: #1565c0;
+            color: white;
+            cursor: pointer;
+            margin-top: 1rem;
+            width: auto;
+            padding: 0.6rem 2rem;
+        }
+        button:hover { background: #1976d2; }
+        button:disabled { background: #333; border-color: #333; cursor: not-allowed; }
+        .field { margin-bottom: 1rem; }
+        .connected-info {
+            margin-top: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: #0d2818;
+            border: 1px solid #1b5e20;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #66bb6a;
+            display: none;
+        }
+        .status {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background: #111;
+            border-radius: 4px;
+            border: 1px solid #222;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status .info { color: #4fc3f7; }
+        .status .success { color: #66bb6a; }
+        .status .error { color: #ef5350; }
+        .result {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: #0d2818;
+            border: 1px solid #1b5e20;
+            border-radius: 4px;
+            display: none;
+        }
+        .result a {
+            color: #66bb6a;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Autonomi WASM Lite</h1>
+    <p class="subtitle">Download files directly from the decentralised network via WebTransport (HTTP/3 over QUIC)</p>
+
+    <div class="field">
+        <label for="address">Data address (hex)</label>
+        <input type="text" id="address" placeholder="64-character hex address of the DataMap">
+    </div>
+
+    <button id="btn-download" onclick="doDownload()">Download</button>
+    <button id="btn-fetch" onclick="doFetchChunk()">Fetch Chunk</button>
+
+    <div class="connected-info" id="connected-info"></div>
+
+    <div class="status" id="log"></div>
+
+    <div class="result" id="result">
+        <span id="result-text"></span>
+    </div>
+
+    <script type="module">
+        import init, { WasmClient } from './pkg/ant_wasm.js';
+
+        let client = null;
+        let wasmReady = false;
+
+        function hexToBytes(hex) {
+            const bytes = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < hex.length; i += 2) {
+                bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+            }
+            return bytes;
+        }
+
+        // Auto-discover and connect on page load
+        async function autoConnect() {
+            log('Initializing WASM module...', 'info');
+            try {
+                await init();
+                wasmReady = true;
+                log('WASM initialized', 'info');
+            } catch (e) {
+                log(`WASM init failed: ${e}`, 'error');
+                return;
+            }
+
+            log('Discovering network via devnet-manifest.json...', 'info');
+            try {
+                const resp = await fetch('devnet-manifest.json');
+                if (!resp.ok) {
+                    log('No devnet-manifest.json found - enter node details manually', 'error');
+                    return;
+                }
+                const manifest = await resp.json();
+
+                if (!manifest.webtransport) {
+                    log('Manifest has no WebTransport info - node may not have it enabled', 'error');
+                    return;
+                }
+
+                const url = manifest.webtransport.url;
+                const certHash = manifest.webtransport.cert_hash;
+                const peerId = manifest.webtransport.peer_id;
+
+                log(`Connecting to ${url}...`, 'info');
+
+                const certHashBytes = hexToBytes(certHash);
+                if (peerId) {
+                    // Full PQ identity verification: cert pin + ML-DSA-65 peer_id check
+                    const peerIdBytes = hexToBytes(peerId);
+                    client = await WasmClient.connect_with_identity(url, certHashBytes, peerIdBytes);
+                    log(`Connected with PQ identity verification`, 'success');
+                } else {
+                    client = await WasmClient.connect_with_cert_hash(url, certHashBytes);
+                    log(`Connected (cert pinned, no PQ identity — add peer_id to manifest)`, 'success');
+                }
+
+                const info = document.getElementById('connected-info');
+                const idStatus = peerId ? ', PQ identity verified' : '';
+                info.textContent = `Connected to ${url} (${manifest.node_count} nodes, cert: ${certHash.substring(0, 16)}...${idStatus})`;
+                info.style.display = 'block';
+
+            } catch (e) {
+                log(`Auto-connect failed: ${e}`, 'error');
+            }
+        }
+
+        window.doDownload = async function() {
+            const address = document.getElementById('address').value.trim();
+            if (!address) { log('Enter an address', 'error'); return; }
+            if (!client) { log('Not connected - waiting for auto-connect', 'error'); return; }
+
+            const btn = document.getElementById('btn-download');
+            btn.disabled = true;
+            log(`Downloading ${address.substring(0, 16)}...`, 'info');
+
+            try {
+                const data = await client.download(address);
+                log(`Download complete: ${data.length} bytes`, 'success');
+
+                const blob = new Blob([data]);
+                const url = URL.createObjectURL(blob);
+                const result = document.getElementById('result');
+                const text = document.getElementById('result-text');
+                text.innerHTML = `${data.length} bytes received. <a id="save-link" href="${url}" download="download.bin">Save file</a>`;
+                result.style.display = 'block';
+
+                if (data.length < 10000) {
+                    try {
+                        const decoder = new TextDecoder('utf-8', { fatal: true });
+                        const str = decoder.decode(data);
+                        log(`Preview: ${str.substring(0, 500)}`, 'info');
+                    } catch (_) {}
+                }
+            } catch (e) {
+                log(`Download failed: ${e}`, 'error');
+            }
+
+            btn.disabled = false;
+        };
+
+        window.doFetchChunk = async function() {
+            const address = document.getElementById('address').value.trim();
+            if (!address) { log('Enter an address', 'error'); return; }
+            if (!client) { log('Not connected - waiting for auto-connect', 'error'); return; }
+
+            log(`Fetching chunk ${address.substring(0, 16)}...`, 'info');
+            try {
+                const data = await client.fetch_chunk(address);
+                log(`Chunk fetched: ${data.length} bytes`, 'success');
+                try {
+                    const str = new TextDecoder('utf-8', { fatal: true }).decode(data);
+                    log(`Content: ${str}`, 'success');
+                } catch (_) {
+                    log(`Binary chunk (${data.length} bytes)`, 'info');
+                }
+            } catch (e) {
+                log(`Fetch failed: ${e}`, 'error');
+            }
+        };
+
+        function log(msg, cls = '') {
+            const el = document.getElementById('log');
+            const span = document.createElement('span');
+            if (cls) span.className = cls;
+            span.textContent = msg + '\n';
+            el.appendChild(span);
+            el.scrollTop = el.scrollHeight;
+        }
+        window.log = log;
+
+        // Auto-connect on load
+        autoConnect();
+    </script>
+</body>
+</html>

@@ -1,0 +1,1134 @@
+# ant-node
+
+**The quantum-proof evolution of Autonomi network nodes.**
+
+ant-node is the next-generation node software for the Autonomi decentralized network, replacing the legacy ant-node with future-proof cryptography and advanced network security.
+
+> **Why Upgrade?** Current legacy ant-node uses Ed25519/X25519 cryptography that will be broken by quantum computers. Data encrypted today can be harvested and decrypted later. ant-node uses FIPS-approved post-quantum algorithms to protect your data forever.
+
+---
+
+## Table of Contents
+
+1. [The Quantum Threat](#the-quantum-threat)
+2. [Key Advantages Over Legacy ant-node](#key-advantages-over-legacy-ant-node)
+3. [Post-Quantum Cryptography](#post-quantum-cryptography)
+4. [NAT Traversal](#nat-traversal)
+5. [Network Hardening](#network-hardening)
+6. [Dual IPv4/IPv6 DHT](#dual-ipv4ipv6-dht)
+7. [Migration from Legacy ant-node](#migration-from-legacy-ant-node)
+8. [Development Status](#development-status)
+9. [Auto-Upgrade System](#auto-upgrade-system)
+10. [Running as a Service](#running-as-a-service)
+11. [Architecture](#architecture)
+12. [Quick Start](#quick-start)
+13. [CLI Reference](#cli-reference)
+14. [Configuration](#configuration)
+15. [Security Considerations](#security-considerations)
+16. [Related Projects](#related-projects)
+
+---
+
+## The Quantum Threat
+
+### Harvest Now, Decrypt Later (HNDL)
+
+Nation-state actors and sophisticated adversaries are already collecting encrypted network traffic today. When cryptographically relevant quantum computers (CRQCs) become available, they will decrypt this harvested data. This is known as the **Harvest Now, Decrypt Later (HNDL)** attack.
+
+**Timeline:**
+- NIST estimates CRQCs capable of breaking RSA-2048 and ECC in **10-15 years**
+- Some researchers suggest it could be sooner
+- Data stored today on decentralized networks must remain secure for **decades**
+
+### Why Classical Cryptography Fails
+
+| Algorithm | Type | Quantum Attack | Time to Break |
+|-----------|------|----------------|---------------|
+| RSA-2048 | Asymmetric | Shor's Algorithm | Hours |
+| ECDSA/Ed25519 | Signatures | Shor's Algorithm | Hours |
+| X25519/ECDH | Key Exchange | Shor's Algorithm | Hours |
+| AES-256 | Symmetric | Grover's Algorithm | Still secure* |
+
+*Symmetric algorithms remain secure with sufficient key sizes (256-bit), but key exchange and signatures are completely broken.
+
+### The Autonomi Network Risk
+
+Legacy ant-node uses:
+- **BLS signatures** - Quantum vulnerable (elliptic curve based)
+- **Ed25519 signatures** - Quantum vulnerable (elliptic curve based)
+- **X25519 key exchange** - Quantum vulnerable (elliptic curve based)
+
+Even though the Autonomi nettwork self encrypted data is secure, he Autonomi network has metadata (signatures, encrypted keys) that will be compromised by quantum computers. **The time to act is now.**
+
+---
+
+## Key Advantages Over Legacy ant-node
+
+| Feature | Legacy ant-node | ant-node |
+|---------|----------|-------------|
+| **Digital Signatures** | BLS/Ed25519 (quantum-vulnerable) | ML-DSA-65 (FIPS 204, quantum-proof) |
+| **Key Exchange** | X25519 (quantum-vulnerable) | ML-KEM-768 (FIPS 203, quantum-proof) |
+| **NAT Traversal** | None (requires port forwarding) | Native QUIC traversal (100% success, no STUN/ICE) |
+| **DHT Architecture** | IPv4-only | Dual IPv4/IPv6 with separate close groups |
+| **Sybil Resistance** | Basic per-IP limits | Multi-layer: subnet, ASN, geographic, node age |
+| **Node Limiting** | None | Prevents large actors spinning up millions of nodes |
+| **Trust System** | Manual metrics | EigenTrust++ with data integrity & replica health |
+| **Geographic Routing** | None | 7-region distribution (no entity holds multiple copies) |
+| **Eclipse Protection** | Limited | Diversity scoring, ASN limits, detection algorithms |
+| **Auto-Upgrade** | Manual | Cross-platform staged rollout with network protection |
+| **Rate Limiting** | Basic | 100 req/min per node, 500/min per IP |
+| **Node Identity** | Ed25519 pubkey (unused, never signs data) | ML-DSA-65 pubkey (actively signs all operations) |
+| **Legacy Data** | N/A | Full support for classical encrypted data |
+
+---
+
+## Post-Quantum Cryptography
+
+ant-node implements **pure post-quantum cryptography** with no hybrid fallbacks. All algorithms are NIST FIPS-approved standards.
+
+### ML-DSA-65 (FIPS 204) - Digital Signatures
+
+- **Security Level**: 128-bit quantum security (NIST Level 2)
+- **Public Key Size**: 1,952 bytes
+- **Signature Size**: 3,309 bytes
+- **Use Cases**: Node identity, message authentication, upgrade verification
+
+ML-DSA (Module-Lattice Digital Signature Algorithm), formerly known as CRYSTALS-Dilithium, is based on the hardness of lattice problems that remain intractable for quantum computers.
+
+### ML-KEM-768 (FIPS 203) - Key Encapsulation
+
+- **Security Level**: 128-bit quantum security (NIST Level 2)
+- **Public Key Size**: 1,184 bytes
+- **Ciphertext Size**: 1,088 bytes
+- **Shared Secret**: 32 bytes
+- **Use Cases**: Secure key exchange, encrypted communications
+
+ML-KEM (Module-Lattice Key Encapsulation Mechanism), formerly CRYSTALS-Kyber, provides secure key exchange resistant to both classical and quantum attacks.
+
+### ChaCha20-Poly1305 - Symmetric Encryption
+
+- **Security Level**: 256-bit (quantum-resistant with Grover consideration)
+- **Use Cases**: Data encryption, authenticated encryption
+
+Symmetric algorithms remain quantum-resistant at sufficient key sizes. ChaCha20-Poly1305 provides high-performance authenticated encryption.
+
+### No Hybrid Mode
+
+Unlike some transitional implementations, ant-node uses **pure post-quantum cryptography**:
+
+- No Ed25519 fallback
+- No X25519 hybrid key exchange
+- No classical signature chains
+
+This ensures maximum security and eliminates the complexity of dual-algorithm systems.
+
+### Backward Compatibility
+
+saorsa-core fully supports **legacy classical encrypted data**:
+
+- **Existing Data**: AES-256-GCM-SIV encrypted content from legacy ant-node remains readable
+- **New Signatures**: All new signatures use ML-DSA-65 (quantum-proof)
+- **New Key Exchange**: All new key exchanges use ML-KEM-768 (quantum-proof)
+- **Gradual Migration**: Network can operate with mixed classical/quantum-proof data
+
+This allows seamless migration without data loss while ensuring all new data is quantum-secure.
+
+---
+
+## NAT Traversal
+
+### Everyone Can Run a Node
+
+One of the most significant advantages of ant-node is **full native QUIC NAT traversal**. Unlike legacy ant-node, which requires manual port forwarding, saorsa-core implements NAT traversal directly within the QUIC protocol itself - **no ICE, no STUN, no external protocols**.
+
+> **100% Success Rate**: In our testing, we have successfully traversed 100% of network connections using native QUIC NAT traversal.
+
+### The Legacy ant-node Limitation
+
+Legacy ant-node has **no native NAT traversal**:
+- Requires manual router configuration or UPnP
+- Excludes users behind carrier-grade NAT (CGNAT)
+- Excludes most mobile and residential users
+- Limits network participation to technically savvy operators
+
+### Native QUIC NAT Traversal
+
+Based on **draft-seemann-quic-nat-traversal-02** (Marten Seemann & Eric Kinnear, Apple Inc.), saorsa-core implements NAT traversal as a pure QUIC protocol extension.
+
+**Why Not ICE/STUN?**
+
+| Aspect | ICE/STUN | Native QUIC (Autonomi) |
+|--------|----------|----------------------|
+| **External Dependencies** | Requires STUN/TURN servers | None - 100% within QUIC |
+| **Protocol Complexity** | Separate signaling (SDP) | QUIC frames only |
+| **Path Validation** | ICE connectivity checks | Native QUIC PATH_CHALLENGE |
+| **Connection Migration** | Separate step after ICE | Automatic QUIC feature |
+| **Amplification Protection** | STUN fingerprints | QUIC rate limits |
+
+**Three Custom QUIC Frames:**
+
+1. **ADD_ADDRESS** - Server advertises candidate addresses to peer
+2. **PUNCH_ME_NOW** - Coordinates simultaneous hole punching
+3. **REMOVE_ADDRESS** - Removes stale address candidates
+
+### How It Works
+
+```
+1. Node starts -> enumerates local interfaces and addresses
+2. Peers exchange addresses via ADD_ADDRESS frames
+3. Client sends PUNCH_ME_NOW to coordinate timing
+4. Both peers simultaneously send QUIC PATH_CHALLENGE packets
+5. NAT bindings created -> PATH_RESPONSE packets received
+6. QUIC connection migrates to direct path automatically
+7. Application data flows directly (no relay needed)
+```
+
+**Key Innovation**: Uses QUIC's existing path validation mechanism (RFC 9000 Section 8.2) as the actual NAT traversal technique, eliminating external protocol dependencies entirely.
+
+### Benefits
+
+- **Universal Participation**: Anyone can run a node, regardless of network configuration
+- **No Port Forwarding**: Works automatically on any network
+- **No External Servers**: No STUN/TURN infrastructure required
+- **CGNAT Support**: Works on mobile networks and carrier-grade NAT
+- **Zero Configuration**: Just start the node - NAT traversal is automatic
+- **Increased Decentralization**: More participants = more resilient network
+
+This ensures that **everyone can contribute to the network**, democratizing participation beyond those with favorable network configurations or technical expertise.
+
+---
+
+## Network Hardening
+
+### Multi-Layer Sybil Resistance
+
+Sybil attacks involve creating many fake identities to gain disproportionate influence. ant-node implements defense-in-depth:
+
+#### Layer 1: IPv6 Node Identity Binding
+
+```
+NodeID = SHA256(IPv6_Address || PublicKey || Salt)
+```
+
+Each node's identity is cryptographically bound to its IPv6 address, making identity spoofing detectable.
+
+#### Layer 2: Subnet Limits
+
+Prevents concentration of nodes in single networks:
+
+| Scope | Maximum Nodes |
+|-------|---------------|
+| Per /64 subnet | 1 |
+| Per /48 subnet | 3 |
+| Per /32 subnet | 10 |
+| Per ASN | 20 |
+
+VPN and hosting providers have **halved limits** to prevent abuse.
+
+#### Layer 3: Node Age & Preference
+
+The network **actively prefers older, more proven nodes**. This creates a natural barrier against attackers who would need to maintain nodes for extended periods before gaining significant influence.
+
+| Status | Age Requirement | Trust Weight | Capabilities |
+|--------|-----------------|--------------|--------------|
+| **New** | 0-24 hours | 0.25x | Limited routing, no close group membership |
+| **Young** | 1-7 days | 0.5x | Standard routing, limited replication |
+| **Established** | 7-30 days | 1.0x | Full participation, all operations |
+| **Veteran** | 30+ days | 1.5x | Trusted bootstrap, priority in close groups |
+
+**Why Node Age Matters:**
+- **Attack Cost**: Attackers must invest months to gain meaningful network influence
+- **Proven Reliability**: Older nodes have demonstrated consistent uptime
+- **Historical Trust**: Long-running nodes have accumulated positive EigenTrust scores
+- **Priority Routing**: Veteran nodes receive routing preference, improving reliability
+
+#### Layer 4: Node Limiting
+
+Prevents **large actors from spinning up millions of nodes at once**:
+
+- **Rate-limited Registration**: New nodes must wait before full participation
+- **Resource Proof**: Nodes must demonstrate actual storage/bandwidth capacity
+- **Progressive Trust**: Influence grows slowly with proven good behavior
+- **Suspicious Pattern Detection**: Rapid node deployment triggers investigation
+
+This makes **hostile takeover economically infeasible** - an attacker would need to:
+1. Acquire millions of unique IP addresses across diverse subnets and ASNs
+2. Maintain nodes for months to accumulate trust
+3. Provide actual storage and bandwidth resources
+4. Avoid triggering pattern detection algorithms
+
+#### Layer 5: Geographic Distribution
+
+Ensures close groups aren't dominated by nodes in single datacenters or regions.
+
+### EigenTrust++ Reputation System
+
+Automated reputation scoring based on observable behavior. This is a **foundational system** that we continue to build upon with additional integrity checks.
+
+**Core Scoring Factors:**
+- **Response Rate**: Percentage of valid responses to requests
+- **Uptime**: Time node has been continuously available
+- **Storage Reliability**: Successful data retrievals
+- **Bandwidth Contribution**: Network throughput provided
+
+**Advanced Integrity Checks (Building on EigenTrust):**
+- **Data Integrity Verification**: Periodic challenges to verify nodes actually store the data they claim
+- **Replica Health Monitoring**: Continuous verification that replicas are valid and accessible
+- **Proof of Storage**: Cryptographic proofs that data exists without retrieving entire content
+- **Cross-Node Validation**: Nodes verify each other's claims through random sampling
+
+**Key Features:**
+- **Time Decay**: Trust decays at 0.99x per hour (recent behavior matters more)
+- **Pre-trusted Bootstrap**: Initial nodes have verified trust scores
+- **Automatic Removal**: Nodes below threshold are automatically excluded
+- **Convergence**: Iterative algorithm converges to stable trust values
+- **Extensible Framework**: New verification methods can be added as the network evolves
+
+**Trust Score Impact:**
+| Trust Level | Multiplier | Effect |
+|-------------|------------|--------|
+| Very Low | 0.1x | Excluded from routing, data migrated away |
+| Low | 0.5x | Reduced routing priority, monitored |
+| Normal | 1.0x | Standard participation |
+| High | 1.5x | Preferred for routing and storage |
+| Very High | 2.0x | Priority close group membership, bootstrap eligible |
+
+The EigenTrust++ system provides the foundation for **continuous network health monitoring**, ensuring that bad actors are detected and isolated before they can cause harm.
+
+### Geographic Routing
+
+7-region latency-aware distribution ensures **no single entity can hold more than one copy of any piece of data**:
+
+1. **North America**
+2. **South America**
+3. **Europe**
+4. **Africa**
+5. **Asia Pacific**
+6. **Middle East**
+7. **Oceania**
+
+**Data Distribution Rules:**
+- Close groups are constructed with **geographic diversity requirements**
+- Each replica of data is stored in a **different geographic region** where possible
+- Nodes from the same ASN/organization cannot hold multiple replicas of the same data
+- XorName-based addressing combined with geographic constraints ensures distribution
+
+**Why This Matters:**
+- **No Single Point of Failure**: Data survives regional outages or censorship
+- **No Entity Concentration**: Even large operators cannot hold multiple copies
+- **Regulatory Resilience**: Data exists across multiple legal jurisdictions
+- **Attack Resistance**: Compromising data requires attacking nodes worldwide
+
+**Benefits:**
+- Prevents datacenter concentration in close groups
+- Optimizes latency for data retrieval (nearest geographic replica)
+- Ensures regulatory diversity (no single jurisdiction dominance)
+- Makes coordinated data destruction practically impossible
+
+---
+
+## Dual IPv4/IPv6 DHT
+
+ant-node implements a novel dual-stack DHT architecture that maximizes network connectivity.
+
+### Separate Close Groups
+
+Each XorName has **two** close groups:
+- IPv4 close group (K=20 closest IPv4 nodes)
+- IPv6 close group (K=20 closest IPv6 nodes)
+
+### Cross-Replication
+
+Data is replicated to **both** close groups:
+- IPv4-only nodes can always retrieve IPv4-stored data
+- IPv6-only nodes can always retrieve IPv6-stored data
+- Dual-stack nodes can retrieve from either
+
+### Happy Eyeballs (RFC 8305)
+
+For connections, ant-node implements Happy Eyeballs:
+1. Attempt IPv6 connection first
+2. Start IPv4 connection after short delay
+3. Use whichever completes first
+4. Cache successful connection type for peer
+
+### Benefits
+
+- **Maximum Connectivity**: Works on IPv4-only, IPv6-only, or dual-stack networks
+- **Future-Proof**: Ready for IPv6-only internet segments
+- **Resilient**: Network partition in one IP version doesn't affect the other
+
+---
+
+## Migration from Legacy ant-node
+
+ant-node provides seamless migration from existing legacy ant-node installations.
+
+### Automatic Detection
+
+```bash
+# Auto-detect legacy ant-node data directories
+ant-node --migrate-ant-data auto
+```
+
+Searches common locations:
+- `~/.local/share/safe/node/`
+- `~/.safe/node/`
+- Platform-specific data directories
+
+### Migration Process
+
+1. **Scan**: Enumerate all record files in legacy ant-node `record_store/`
+2. **Classify**: Identify record types (Chunk, Register, Scratchpad, GraphEntry)
+3. **Decrypt**: Decrypt AES-256-GCM-SIV encrypted records
+4. **Upload**: Store on Autonomi network
+5. **Track**: Save progress for resume capability
+
+### Progress Tracking
+
+Migration can be interrupted and resumed:
+
+```bash
+# Migration continues from last checkpoint
+ant-node --migrate-ant-data ~/.local/share/safe/node
+```
+
+### Payment Model
+
+| Data Type | Payment |
+|-----------|---------|
+| **Legacy Autonomi data** | FREE (already paid) |
+| **New data** | EVM payment (Arbitrum One) |
+
+The three-layer verification:
+1. **LRU Cache**: Fast lookup of recently verified XorNames
+2. **Autonomi Check**: Query legacy network for existing data
+3. **EVM Verification**: Verify on-chain payment for new data
+
+### CRDT Data: The Identity Challenge
+
+Mutable data types (Scratchpad, Pointer, GraphEntry) present a **fundamental challenge** for migration because they are owner-indexed and require valid signatures.
+
+#### Why CRDT Data Cannot Be Directly Migrated
+
+**ant-nodes are pure post-quantum** - they only understand ML-DSA-65 signatures:
+
+```
+User: "Here's my Scratchpad update, signed with Ed25519"
+ant-node: "Invalid signature - rejected"
+```
+
+This is by design. Adding classical crypto verification would:
+- Increase attack surface
+- Defeat the purpose of quantum-proof security
+- Create complexity that could introduce vulnerabilities
+
+#### The Two-Network Reality
+
+```
++---------------------------------------------------------------------+
+|                     TWO SEPARATE NETWORKS                            |
++--------------------------------+------------------------------------+
+|      AUTONOMI NETWORK          |         AUTONOMI NETWORK           |
+|      (Classical Crypto)        |         (Quantum Crypto)           |
++--------------------------------+------------------------------------+
+|  Nodes: legacy ant-node        |  Nodes: ant-node                   |
+|  Signatures: Ed25519/BLS       |  Signatures: ML-DSA-65 ONLY        |
+|  Key Exchange: X25519          |  Key Exchange: ML-KEM-768          |
+|                                |                                    |
+|  Scratchpad address:           |  Scratchpad address:               |
+|  hash("scratchpad:" ||         |  hash("scratchpad:" ||             |
+|       Ed25519_pubkey)          |       ML-DSA_65_pubkey)            |
+|           |                    |           |                        |
+|    0x7a3f...                   |    0xb2c8...                       |
+|                                |                                    |
+|  DIFFERENT ADDRESSES - SAME USER, DIFFERENT IDENTITY                |
++--------------------------------+------------------------------------+
+```
+
+#### What This Means for Users
+
+| Data Type | Autonomi Legacy -> Autonomi PQ | Notes |
+|-----------|-------------------|-------|
+| **Chunk** | Migratable | Content-addressed, no signature needed |
+| **Scratchpad** | New identity | Different address on PQ network |
+| **Pointer** | New identity | Different address on PQ network |
+| **GraphEntry** | New identity | Different address on PQ network |
+
+**Users don't "migrate" their CRDT data - they establish a new quantum-safe identity on the Autonomi network.**
+
+#### The HybridClient Architecture
+
+The HybridClient connects to **both networks simultaneously**:
+
+```rust
+// HybridClient talks to TWO different networks
+let hybrid = HybridClient::new(config)?;
+
+// Read from Autonomi network (via legacy ant-node peers)
+let legacy_data = hybrid.legacy().get_scratchpad(&ed25519_owner).await?;
+
+// Write to Autonomi network (via ant-node peers)
+let new_scratchpad = hybrid.quantum().put_scratchpad(
+    &mldsa_keypair,
+    content_type,
+    legacy_data.payload().to_vec(),
+).await?;
+
+// Note: These have DIFFERENT addresses!
+// legacy_data.address() != new_scratchpad.address()
+```
+
+#### Migration Strategies for CRDT Data
+
+**Strategy 1: Data Snapshot + New Identity**
+```
+1. Read final state from Autonomi (LegacyClient)
+2. Generate new ML-DSA-65 keypair (new identity)
+3. Create equivalent Scratchpad on PQ network (QuantumClient)
+4. Update applications to use new address
+5. Old Autonomi data becomes read-only archive
+```
+
+**Strategy 2: Identity Registry**
+```
+1. Create a public "migration registry" on PQ network
+2. Users register: Ed25519_pubkey_hash -> ML-DSA_pubkey_hash
+3. Applications can resolve old addresses to new ones
+4. Provides continuity for social/reputation systems
+```
+
+**Strategy 3: Parallel Operation (Transition Period)**
+```
+1. Autonomi network continues running for existing CRDT data
+2. Users gradually create new identities on PQ network
+3. Applications support both networks during transition
+4. Eventually deprecate legacy access
+```
+
+#### Chunk Migration: The Easy Case
+
+Chunks are content-addressed and immutable - they can be directly migrated:
+
+```rust
+// Chunks have the SAME address on both networks
+let chunk = hybrid.legacy().get_chunk(&xorname).await?;
+hybrid.quantum().store_chunk(chunk.data()).await?;
+
+// Address is hash(content) - identical on both networks
+```
+
+#### Security Implications
+
+| Aspect | Autonomi (Legacy) | Autonomi (New) |
+|--------|-------------------|--------------|
+| **Signatures** | Ed25519 | ML-DSA-65 |
+| **Quantum Safe** | Vulnerable | Protected |
+| **CRDT Updates** | Via Autonomi only | Via Autonomi PQ only |
+| **Identity** | Ed25519 pubkey | ML-DSA-65 pubkey |
+
+**Critical**: Users cannot update their Autonomi CRDT data through PQ ant-nodes. To update legacy data, they must connect to the Autonomi network directly (which continues to run legacy ant-nodes).
+
+#### Long-Term Vision
+
+```
+Phase 1 (Now):     Both networks operate, HybridClient bridges them
+Phase 2 (Transition): Users migrate to PQ identities, legacy read-only
+Phase 3 (Future):  Legacy deprecated, PQ network is the primary network
+```
+
+The goal is not to maintain classical crypto forever, but to provide a **clean migration path** where users can:
+1. Access their existing data (read-only eventually)
+2. Establish new quantum-safe identities
+3. Transition at their own pace
+
+---
+
+## Development Status
+
+### Current Implementation Status
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Core Library** | Complete | Full node implementation with client APIs |
+| **Data Types** | Complete | Chunk, Scratchpad, Pointer, GraphEntry |
+| **Payment Verification** | Complete | Autonomi lookup + EVM verification + LRU cache |
+| **Migration Decryption** | Complete | AES-256-GCM-SIV decryption for legacy ant-node data |
+| **Auto-Upgrade** | Complete | Cross-platform with ML-DSA-65 signature verification |
+| **E2E Test Infrastructure** | Complete | Real P2P testnet with 25+ nodes |
+
+### Test Coverage
+
+```
+Library Unit Tests:     104 passing
+E2E Unit Tests:          35 passing
+E2E Integration Tests:   49 passing (real P2P testnet)
+------------------------------------
+Total:                  188 tests
+```
+
+### Data Types Supported
+
+| Type | Size Limit | Addressing | Mutability | Use Cases |
+|------|------------|------------|------------|-----------|
+| **Chunk** | 4 MB | Content-addressed (SHA256) | Immutable | Files, documents, media |
+| **Scratchpad** | 4 MB | Owner public key | Mutable (CRDT counter) | User profiles, settings |
+| **Pointer** | 32 bytes | Owner public key | Mutable (counter) | Mutable references, DNS-like |
+| **GraphEntry** | 100 KB | Content + owner + parents | Immutable | Version control, social feeds |
+
+### Migration Capability
+
+The migration system is **fully implemented** and ready for use:
+
+1. **Decryption Module** (`src/migration/decrypt.rs`)
+   - AES-256-GCM-SIV decryption with HKDF key derivation
+   - Handles embedded nonces from legacy ant-node format
+   - Full round-trip encryption/decryption verified
+
+2. **Scanner Module** (`src/migration/scanner.rs`)
+   - Auto-detection of legacy ant-node data directories
+   - Cross-platform path discovery
+   - Record enumeration and classification
+
+3. **Client APIs** (`src/client/`)
+   - `QuantumClient`: Pure Autonomi PQ network operations
+   - `LegacyClient`: Read-only access to Autonomi legacy network
+   - `HybridClient`: Seamless access to both networks
+
+4. **Payment Verification** (`src/payment/`)
+   - Three-layer verification: LRU cache -> Autonomi lookup -> EVM check
+   - Legacy data is FREE (already paid on Autonomi)
+   - New data requires EVM payment (Arbitrum One)
+
+### E2E Test Infrastructure
+
+The test infrastructure spawns real P2P networks for integration testing:
+
+```rust
+// Spawn a 25-node testnet
+let harness = TestHarness::setup().await?;
+
+// Store and retrieve data across nodes
+let chunk_addr = harness.node(5).store_chunk(&data).await?;
+let retrieved = harness.node(20).get_chunk(&chunk_addr).await?;
+
+// With EVM payment verification
+let harness = TestHarness::setup_with_evm().await?;
+assert!(harness.anvil().is_healthy().await);
+```
+
+### Roadmap
+
+| Phase | Target | Status |
+|-------|--------|--------|
+| **Phase 1** | Core implementation | Complete |
+| **Phase 2** | E2E test infrastructure | Complete |
+| **Phase 3** | Testnet deployment | In Progress |
+| **Phase 4** | Migration tooling CLI | Planned |
+| **Phase 5** | Mainnet preparation | Planned |
+
+---
+
+## Auto-Upgrade System
+
+ant-node automatically stays up-to-date with secure, verified upgrades across **all platforms** - Windows, macOS, and Linux.
+
+### Cross-Platform Support
+
+| Platform | Architecture | Binary |
+|----------|--------------|--------|
+| **Linux** | x86_64, aarch64 | `ant-node-linux-*` |
+| **macOS** | x86_64, aarch64 (Apple Silicon) | `ant-node-darwin-*` |
+| **Windows** | x86_64 | `ant-node-windows-*.exe` |
+
+The auto-upgrade system automatically detects the current platform and downloads the correct binary.
+
+### How It Works
+
+1. **Monitor**: Periodically check GitHub releases for new versions
+2. **Download**: Fetch the correct binary for the current platform
+3. **Verify**: Validate ML-DSA-65 signature against embedded public key
+4. **Stage**: Download completes before any changes are made
+5. **Apply**: Replace current binary and restart
+6. **Rollback**: Automatic rollback if new version fails health checks
+
+### Network-Safe Staged Rollout
+
+To prevent **network collapse** from simultaneous upgrades, ant-node implements **randomized staged rollout**:
+
+**How Staged Rollout Works:**
+- Each node adds a **random delay** (0-24 hours) before applying upgrades
+- Delay is deterministically derived from node ID (consistent but distributed)
+- Critical security updates can override with shorter delay windows
+- Network maintains minimum online node threshold during rollout
+
+**Why This Matters:**
+- **No Mass Restart**: Nodes don't all restart simultaneously
+- **Network Continuity**: DHT maintains routing capability throughout upgrade
+- **Data Availability**: Close groups retain quorum during transition
+- **Rollback Safety**: Problems detected early before full network deployment
+
+```
+Upgrade Timeline (example):
+Hour 0:  Release published
+Hour 1:  ~4% of nodes upgrade (random delay 0-1h)
+Hour 6:  ~25% of nodes upgraded
+Hour 12: ~50% of nodes upgraded
+Hour 24: ~100% of nodes upgraded
+```
+
+### Security Guarantees
+
+**Embedded Public Key:**
+The ML-DSA-65 verification key is compiled into the binary at build time. It cannot be changed by:
+- Configuration files
+- Environment variables
+- Network messages
+- Remote commands
+
+The only way to change the signing key is a manual upgrade with a new binary.
+
+**Signature Verification:**
+- Every release is signed with the project's ML-DSA-65 private key
+- Signature size: 3,309 bytes
+- Failed verification = upgrade rejected
+- Tampered binaries cannot be installed
+
+### Unattended Operation
+
+ant-node is designed for **true unattended operation**:
+
+- **Zero Intervention**: Nodes upgrade themselves without human action
+- **Self-Healing**: Failed upgrades automatically rollback
+- **Health Monitoring**: Post-upgrade health checks verify functionality
+- **Notification**: Optional alerts for upgrade events (success/failure)
+
+This enables node operators to deploy and forget, knowing their nodes will stay current and secure.
+
+### Release Channels
+
+| Channel | Description | Rollout Speed |
+|---------|-------------|---------------|
+| **stable** | Production releases, thoroughly tested | 24-hour staged |
+| **beta** | Pre-release versions for early testing | 6-hour staged |
+
+```bash
+# Use stable channel (default)
+ant-node --upgrade-channel stable
+
+# Use beta channel for testing
+ant-node --upgrade-channel beta
+```
+
+### Configuration
+
+```toml
+[upgrade]
+channel = "stable"
+check_interval_hours = 1
+github_repo = "WithAutonomi/ant-node"
+stop_on_upgrade = false  # Set true when running under a service manager
+# staged_rollout_hours = 24  # For staged rollout
+```
+
+---
+
+## Running as a Service
+
+For production deployments, run ant-node under a service manager so it restarts automatically after upgrades.
+
+### systemd (Linux)
+
+Create a service file at `/etc/systemd/system/ant-node.service`:
+
+```ini
+[Unit]
+Description=Ant Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ant-node --stop-on-upgrade
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ant-node
+```
+
+Key settings:
+- `--stop-on-upgrade` tells the node to exit cleanly after applying an upgrade
+- `Restart=always` ensures systemd restarts the node after the upgrade exit
+
+### launchd (macOS)
+
+Create a plist at `~/Library/LaunchAgents/com.autonomi.node.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.autonomi.node</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/ant-node</string>
+        <string>--stop-on-upgrade</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.autonomi.node.plist
+```
+
+### Windows Service
+
+Use [WinSW](https://github.com/winsw/winsw) or [NSSM](https://nssm.cc/) to wrap ant-node as a Windows service.
+
+With WinSW, create `ant-node-service.xml`:
+
+```xml
+<service>
+  <id>ant-node</id>
+  <name>Ant Node</name>
+  <executable>C:\ant-node\ant-node.exe</executable>
+  <arguments>--stop-on-upgrade</arguments>
+  <onfailure action="restart" delay="5 sec"/>
+</service>
+```
+
+The node exits with code 100 on upgrade, which WinSW treats as a failure and restarts.
+
+### Standalone Mode (No Service Manager)
+
+Without `--stop-on-upgrade`, the node spawns the upgraded binary as a new process before exiting. This is the default behavior and requires no service manager.
+
+---
+
+## Architecture
+
+ant-node follows a **thin wrapper** design philosophy, adding minimal code on top of saorsa-core.
+
+### Component Responsibilities
+
+| Component | Provider | Description |
+|-----------|----------|-------------|
+| **P2P Networking** | saorsa-core | QUIC transport, connection management |
+| **DHT Routing** | saorsa-core | Trust-weighted Kademlia |
+| **Reputation** | saorsa-core | EigenTrust++ engine |
+| **Security** | saorsa-core | Rate limiting, blacklisting, diversity scoring |
+| **Content Storage** | saorsa-core | Local chunk storage |
+| **Replication** | saorsa-core | Data redundancy management |
+| **Auto-Upgrade** | ant-node | Binary update system |
+| **Migration** | ant-node | Legacy ant-node data import |
+| **CLI** | ant-node | User interface |
+
+### Code Size
+
+ant-node adds approximately **1,000 lines** of new code:
+- Easy to audit
+- Minimal attack surface
+- Clear separation of concerns
+
+### Dependency Chain
+
+```
+ant-node
+    +-- saorsa-core
+            +-- saorsa-pqc (ML-DSA, ML-KEM)
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Rust 1.75+ (for building from source)
+- Linux, macOS, or Windows
+
+### Build from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/WithAutonomi/ant-node
+cd ant-node
+
+# Build release binary
+cargo build --release
+
+# Binary location
+./target/release/ant-node --version
+```
+
+### Run with Defaults
+
+```bash
+# Start node with default settings
+./target/release/ant-node
+```
+
+### Join the Network
+
+On first startup, the node needs bootstrap peers to join the network.
+Production bootstrap peers are shipped in `bootstrap_peers.toml` alongside
+the binary and are loaded automatically:
+
+```bash
+# Starts and auto-discovers bootstrap_peers.toml next to the binary
+./target/release/ant-node
+```
+
+You can also specify bootstrap peers explicitly:
+
+```bash
+./target/release/ant-node \
+    --bootstrap "10.0.0.1:10000" \
+    --bootstrap "10.0.0.2:10000"
+```
+
+### Full Configuration
+
+```bash
+./target/release/ant-node \
+    --root-dir ~/.ant-node \
+    --port 12000 \
+    --upgrade-channel stable \
+    --migrate-ant-data auto \
+    --log-level info
+```
+
+---
+
+## CLI Reference
+
+```
+ant-node [OPTIONS]
+
+Options:
+    --root-dir <PATH>
+        Node data directory
+        [default: ~/.ant-node]
+
+    --port <PORT>
+        Listening port (0 for automatic selection)
+        [default: 0]
+
+    --ipv4-only
+        Force IPv4-only mode (disable dual-stack).
+        Use on hosts without working IPv6.
+
+    --bootstrap <ADDR>
+        Bootstrap peer socket addresses (can be specified multiple times)
+        Example: 1.2.3.4:10000
+
+    --migrate-ant-data <PATH>
+        Path to legacy ant-node data directory to migrate
+        Use 'auto' for automatic detection
+
+    --upgrade-channel <CHANNEL>
+        Release channel: stable, beta
+        [default: stable]
+
+    --log-level <LEVEL>
+        Log verbosity: trace, debug, info, warn, error
+        [default: info]
+
+    -h, --help
+        Print help information
+
+    -V, --version
+        Print version information
+```
+
+---
+
+## Configuration
+
+Configuration sources (highest to lowest priority):
+
+1. **Command-line arguments** (e.g., `--bootstrap`)
+2. **Environment variables** (`ANT_*`)
+3. **Configuration file** (`--config path/to/config.toml`)
+4. **Bootstrap peers file** (auto-discovered `bootstrap_peers.toml`)
+
+### Bootstrap Peers File
+
+The `bootstrap_peers.toml` file provides initial peers for joining the network.
+It is shipped alongside the binary in release archives and auto-discovered on startup
+when no `--bootstrap` CLI argument is provided.
+
+**Format:**
+```toml
+peers = [
+    "10.0.0.1:10000",
+    "10.0.0.2:10000",
+]
+```
+
+**Search order** (first match wins):
+
+| Priority | Source | Path |
+|----------|--------|------|
+| 1 | `$ANT_BOOTSTRAP_PEERS_PATH` env var | Explicit path to file |
+| 2 | Executable directory | `<exe_dir>/bootstrap_peers.toml` |
+| 3 | Platform config dir | Linux: `~/.config/ant/bootstrap_peers.toml` |
+|   |                      | macOS: `~/Library/Application Support/ant/bootstrap_peers.toml` |
+|   |                      | Windows: `%APPDATA%\ant\bootstrap_peers.toml` |
+| 4 | System config (Unix) | `/etc/ant/bootstrap_peers.toml` |
+
+**Bootstrap peer precedence** (highest wins):
+1. `--bootstrap` CLI argument or `ANT_BOOTSTRAP` env var
+2. `bootstrap = [...]` in a `--config` file
+3. Auto-discovered `bootstrap_peers.toml`
+4. Empty (node cannot join an existing network)
+
+### Environment Variables
+
+```bash
+export ANT_ROOT_DIR=~/.ant-node
+export ANT_PORT=12000
+export ANT_LOG_LEVEL=info
+export ANT_AUTO_UPGRADE=true
+export ANT_UPGRADE_CHANNEL=stable
+```
+
+### Configuration File
+
+`~/.ant-node/config.toml`:
+
+```toml
+root_dir = "~/.ant-node"
+port = 0  # Auto-select
+bootstrap = [
+    "10.0.0.1:10000",
+    "10.0.0.2:10000",
+]
+
+[upgrade]
+# Upgrades are always enabled; configure behavior here
+channel = "stable"
+check_interval_hours = 1
+github_repo = "WithAutonomi/ant-node"
+stop_on_upgrade = false
+
+[migration]
+auto_detect = true
+# ant_data_path = "~/.local/share/safe/node"  # Explicit path
+
+[payment]
+# Autonomi verification for legacy data
+autonomi_enabled = true
+autonomi_timeout_secs = 30
+
+# EVM verification for new data
+evm_enabled = true
+evm_network = "arbitrum-one"
+
+# Cache configuration
+cache_capacity = 100000
+```
+
+---
+
+## Security Considerations
+
+### Rate Limiting
+
+Protects against denial-of-service attacks:
+
+| Limit | Value |
+|-------|-------|
+| Requests per node per minute | 100 |
+| Requests per IP per minute | 500 |
+| Concurrent connections per IP | 10 |
+
+### Blacklist Management
+
+Automatically blacklists nodes that:
+- Repeatedly violate rate limits
+- Fail trust score thresholds
+- Exhibit malicious behavior patterns
+
+### Eclipse Attack Detection
+
+Monitors for attempts to isolate nodes:
+- Diversity scoring ensures varied peer selection
+- ASN limits prevent single-provider dominance
+- Geographic distribution prevents regional isolation
+- Connection history analysis detects patterns
+
+### Audit Logging
+
+All security-relevant events are logged:
+- Connection attempts
+- Rate limit violations
+- Trust score changes
+- Blacklist modifications
+
+Enable detailed logging:
+
+```bash
+RUST_LOG=ant_node=debug,saorsa_core=debug ./ant-node
+```
+
+---
+
+## Related Projects
+
+| Project | Description | Repository |
+|---------|-------------|------------|
+| **saorsa-core** | Core networking and security library | [github.com/WithAutonomi/saorsa-core](https://github.com/WithAutonomi/saorsa-core) |
+| **saorsa-pqc** | Post-quantum cryptography primitives | [github.com/WithAutonomi/saorsa-pqc](https://github.com/WithAutonomi/saorsa-pqc) |
+| **ant-cli** | Unified CLI for file and chunk operations with EVM payments | Built into ant-node |
+
+---
+
+## License
+
+This project is dual-licensed under MIT and Apache-2.0.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please follow these guidelines:
+
+1. Fork the repository
+2. Create a feature branch
+3. Run tests and clippy before submitting
+4. Submit a pull request
+
+### Development
+
+```bash
+# Run tests
+cargo test
+
+# Run with debug logging
+RUST_LOG=debug cargo run
+
+# Check for issues
+cargo clippy -- -D warnings
+
+# Format code
+cargo fmt
+```
+
+---
+
+**ant-node**: Securing the future of decentralized data, one quantum-proof node at a time.
