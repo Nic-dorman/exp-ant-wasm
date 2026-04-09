@@ -2,6 +2,8 @@
 
 Experimental browser-direct downloads from the Autonomi network over HTTP/3 QUIC with post-quantum cryptography. No intermediary servers — the browser connects directly to network nodes via WebTransport.
 
+> **Status:** This is an experimental project, currently paused. The E2E demo was working as of 2026-04-02. The PQC tunnel and security hardening are implemented but the TLS authentication gap (ECDSA P-256) depends on upstream browser support (~2028+). The app-layer PQC tunnel will remain the primary PQ authentication mechanism until then.
+
 ## Architecture
 
 The system uses a dual-transport design: P2P traffic between nodes uses saorsa-core's native QUIC with full PQ crypto, while browser clients connect via WebTransport (HTTP/3) with an application-layer PQC tunnel layered inside the TLS session.
@@ -132,6 +134,3 @@ Fixes applied from an in-depth PQ cryptography review:
 - **Response size bounds**: Client-side reads capped at `MAX_WIRE_MESSAGE_SIZE + 512` to prevent OOM from malicious servers.
 - **PQ TLS**: WebTransport server configured with `X25519MLKEM768` as preferred key exchange via aws-lc-rs `CryptoProvider` and wtransport's `with_custom_tls()`.
 
-## Status
-
-This is an experimental project. The E2E demo was working as of 2026-04-02 and is currently paused. The PQC tunnel and security hardening are implemented but the TLS authentication gap (ECDSA P-256) depends on upstream browser support (~2028+). The app-layer PQC tunnel will remain the primary PQ authentication mechanism until then.
