@@ -112,6 +112,18 @@ Browser (WASM)                              ant-node
 
 **The one remaining gap** — TLS authentication — cannot be fixed from our side. The browser's TLS stack is a black box; no browser accepts PQ signatures for certificate verification today. Google's Merkle Tree Certificates (targeting Q3 2027) are the most likely path. The app-layer ML-DSA-65 authentication fully covers this with PQ server identity verification now.
 
+## Why WebTransport (not WebRTC)?
+
+The project's earliest demo used WebRTC data channels (`test-file.txt` is a relic of it). The switch to WebTransport came down to the PQ-first goal — status re-verified 2026-08-12:
+
+| Consideration | WebTransport | WebRTC |
+|-------|:---:|:---:|
+| PQ key exchange in browsers today | ✅ QUIC/TLS 1.3 negotiates X25519MLKEM768 by default | ❌ DTLS 1.2 has no PQ path; DTLS 1.3 PQC is a Chrome field trial |
+| PQ-capable Rust server stack | ✅ rustls + aws-lc-rs (this repo) | ❌ webrtc-rs is DTLS 1.2-only, no PQ code |
+| Rust stack maturity | ✅ quinn/wtransport stable | ⚠️ legacy line stalls >16 KiB writes; new sans-IO core is pre-1.0 alpha |
+
+Details (as of 2026-08): Chrome now ships DTLS 1.3 ([enabled by default](https://issues.chromium.org/issues/382915276)) and libwebrtc carries a [`WebRTC-EnableDtlsPqc` field trial](https://webrtc.googlesource.com/src/+/dae879ac73e0cd06f08a0fd160da764263dc3c24) — so transport-layer-PQ WebRTC is no longer impossible, just experimental on the browser side and unsupported by any Rust server stack. On the Rust side, webrtc-dtls rejected Chrome's ClientHello outright until [0.12.0 (2025-05)](https://github.com/webrtc-rs/webrtc/pull/654), webrtc-data's `poll_write` still reports parked writes as complete in the latest 0.17.2 release (the >16 KiB stall), and the rewritten [`rtc` core](https://github.com/webrtc-rs/rtc) remains DTLS 1.2-only. WebRTC keeps one structural advantage — true P2P with self-signed certs via SDP fingerprints, proved viable against production by [autonomi-webrtc-direct-poc](https://github.com/rid-dim/autonomi-webrtc-direct-poc) — so this is worth revisiting if DTLS PQC ships by default and a Rust server stack catches up.
+
 ## Crate Structure
 
 | Crate | Purpose |
