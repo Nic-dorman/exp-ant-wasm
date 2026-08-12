@@ -100,15 +100,15 @@ Browser (WASM)                              ant-node
 
 | Layer | Algorithm | Quantum-Safe | Notes |
 |-------|-----------|:---:|-------|
-| TLS Key Exchange | X25519MLKEM768 | **Yes** | Hybrid PQ+classical via aws-lc-rs. Browsers negotiate automatically. |
-| TLS Authentication | ECDSA P-256 | No | Blocked by browsers — no PQ signature verification until ~2028 (Google MTCs). |
-| App-layer Key Exchange | ML-KEM-768 (FIPS 203) | **Yes** | NIST Level 3. Fresh keypair per session. |
-| App-layer Authentication | ML-DSA-65 (FIPS 204) | **Yes** | NIST Level 3. Server signs handshake, client verifies. PeerId binding available. |
-| Session Encryption | ChaCha20-Poly1305 | **Yes** | 256-bit symmetric — inherently quantum-safe. |
-| Content Addressing | BLAKE3 | **Yes** | 256-bit hash — quantum-safe. Verified client-side and server-side. |
-| Self-Encryption Keys | BLAKE3 XOF + ChaCha20-Poly1305 | **Yes** | Convergent encryption with symmetric primitives. |
-| Payment Quote Signatures | ML-DSA-65 | **Yes** | Quotes signed with node's PQ identity. |
-| P2P Transport (node-to-node) | ML-KEM-768 + ML-DSA-65 | **Yes** | Full PQ via saorsa-core. |
+| TLS Key Exchange | X25519MLKEM768 | ✅ | Hybrid PQ+classical via aws-lc-rs. Browsers negotiate automatically. |
+| TLS Authentication | ECDSA P-256 | ❌ | Blocked by browsers — no PQ signature verification until ~2028 (Google MTCs). |
+| App-layer Key Exchange | ML-KEM-768 (FIPS 203) | ✅ | NIST Level 3. Fresh keypair per session. |
+| App-layer Authentication | ML-DSA-65 (FIPS 204) | ✅ | NIST Level 3. Server signs handshake, client verifies. PeerId binding available. |
+| Session Encryption | ChaCha20-Poly1305 | ✅ | 256-bit symmetric — inherently quantum-safe. |
+| Content Addressing | BLAKE3 | ✅ | 256-bit hash — quantum-safe. Verified client-side and server-side. |
+| Self-Encryption Keys | BLAKE3 XOF + ChaCha20-Poly1305 | ✅ | Convergent encryption with symmetric primitives. |
+| Payment Quote Signatures | ML-DSA-65 | ✅ | Quotes signed with node's PQ identity. |
+| P2P Transport (node-to-node) | ML-KEM-768 + ML-DSA-65 | ✅ | Full PQ via saorsa-core. |
 
 **The one remaining gap** — TLS authentication — cannot be fixed from our side. The browser's TLS stack is a black box; no browser accepts PQ signatures for certificate verification today. Google's Merkle Tree Certificates (targeting Q3 2027) are the most likely path. The app-layer ML-DSA-65 authentication fully covers this with PQ server identity verification now.
 
